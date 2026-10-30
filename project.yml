@@ -1,0 +1,66 @@
+name: X3FuseNative
+options:
+  bundleIdPrefix: com.sagwa.X3Fuse
+  deploymentTarget:
+    iOS: "17.0"
+settings:
+  base:
+    ARCHS: arm64
+    SWIFT_VERSION: "5.0"
+    TARGETED_DEVICE_FAMILY: "1,2"
+    CODE_SIGN_STYLE: Automatic
+    ENABLE_USER_SCRIPT_SANDBOXING: "NO"
+targets:
+  X3FuseNative:
+    type: application
+    platform: iOS
+    sources:
+      - path: App
+      - path: Vendor/x3f-render/NOTICE
+        buildPhase: resources
+      - path: Vendor/x3f-render/licenses
+        buildPhase: resources
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.sagwa.X3Fuse.native
+        PRODUCT_NAME: X3FuseNative
+        "ENABLE_TESTABILITY[sdk=iphonesimulator*]": "YES"
+        GENERATE_INFOPLIST_FILE: "YES"
+        INFOPLIST_KEY_CFBundleDisplayName: X3Fuse Native
+        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.photography
+        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: "YES"
+        INFOPLIST_KEY_UILaunchScreen_Generation: "YES"
+        INFOPLIST_KEY_UIFileSharingEnabled: "YES"
+        INFOPLIST_KEY_LSSupportsOpeningDocumentsInPlace: "YES"
+        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone: "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
+        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad: "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+    dependencies:
+      - framework: Engine/build/X3FuseEngine.xcframework
+        embed: false
+      - sdk: Metal.framework
+      - sdk: MetalKit.framework
+      - sdk: CoreImage.framework
+      - sdk: QuartzCore.framework
+      - sdk: Foundation.framework
+      - sdk: CoreGraphics.framework
+      - sdk: IOSurface.framework
+  X3FuseNativeTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources: [Tests]
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: "YES"
+        PRODUCT_BUNDLE_IDENTIFIER: com.sagwa.X3Fuse.native.tests
+    dependencies:
+      - target: X3FuseNative
+schemes:
+  X3FuseNative:
+    build:
+      targets:
+        X3FuseNative: all
+        X3FuseNativeTests: [test]
+    test:
+      targets: [X3FuseNativeTests]

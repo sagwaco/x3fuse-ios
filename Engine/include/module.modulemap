@@ -1,0 +1,4 @@
+module X3FuseEngine {
+    header "x3fuse_engine.h"
+    export *
+}

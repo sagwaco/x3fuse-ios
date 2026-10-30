@@ -1,0 +1,39 @@
+[package]
+name = "x3fuse-engine"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88"
+license = "GPL-3.0-only"
+description = "C ABI for the X3Fuse iOS editor"
+publish = false
+
+[lib]
+name = "x3fuse_engine"
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+# Same features as the desktop editor, so output matches.
+x3f-core = { version = "=0.4.0", features = ["gpu", "serde"] }
+x3f-render = { path = "../Vendor/x3f-render" }
+serde_json = "1"
+sha2 = "0.10"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+panic = "unwind"
+
+# RAW processing is too slow without optimization, also in tests.
+[profile.dev.package.x3f-core]
+opt-level = 3
+[profile.dev.package.x3f-sys]
+opt-level = 3
+[profile.dev.package.x3f-render]
+opt-level = 3
+[profile.dev.package.image]
+opt-level = 3
+
+[dev-dependencies]
+x3f-core = { version = "=0.4.0", features = ["gpu", "serde"] }
+serde_json = "1"
+sha2 = "0.10"

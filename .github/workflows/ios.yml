@@ -1,0 +1,17 @@
+name: Native iOS
+on: [push, pull_request, workflow_dispatch]
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios,aarch64-apple-ios-sim
+      - run: brew install xcodegen
+      - run: cargo test --manifest-path Engine/Cargo.toml --locked --release
+      - run: bash scripts/build-engine.sh
+      - run: xcodegen generate
+      - run: xcodebuild -project X3FuseNative.xcodeproj -scheme X3FuseNative -configuration Release -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO build-for-testing

@@ -1,0 +1,199 @@
+# x3f-render
+
+GPU RAW editing for X3Fuse, licensed GPL-3.0-only. It lives in the X3Fuse
+repository and depends on the Apache-2.0 x3fuse-core decoder. See
+[NOTICE](NOTICE) for source and asset attribution, and
+[asset provenance](assets/PROVENANCE.md) for pinned hashes.
+
+`Renderer::new()` selects a hardware wgpu adapter (Metal, Vulkan, or DX12).
+Editing requires that GPU; failure is returned to the caller without a CPU
+rendering fallback. Callers should serialize interactive/export jobs and retain
+the last successful preview until a replacement finishes.
+
+`Renderer::render(&SceneLinearImage, &EditRecipe, RenderOptions, &AtomicBool)`
+returns interleaved, transfer-encoded RGB16 plus native output dimensions and
+the actual normalized preview region. JPEG/PNG encoders and the core TIFF writer
+embed the matching sRGB, Adobe RGB (1998), or ProPhoto RGB ICC profile.
+`output_dimensions` and `pick_white_balance` use the same geometry as rendering.
+For repeated adjustments, retain `PreparedImage::new(scene, &cancel)` and call
+`Renderer::render_prepared(&prepared, ...)`. It owns immutable source pixels and
+validates them once and lazily uploads an rgba32float source texture on its first
+render. Repeated adjustments reuse that texture; a different renderer reuploads
+it to its own device. `prepared.image()` exposes the source for dimensions and
+white-balance picking. Rebuild it after changing RAW preparation settings.
+
+Input is calibrated extended linear sRGB/D65, with negative components and
+highlight headroom preserved by x3f-core. Set `SceneLinearOptions.denoise_intensity`
+to the recipe's `denoise` when preparing the RAW; changing that setting requires
+preparing it again. The renderer does not denoise twice. Other adjustments reuse
+the prepared float image. Camera-calibrated temperature/tint applies relative
+sensor-channel gains, normalized to green to preserve exposure.
+The white-balance picker validates the recovered sensor values. It accepts
+negative visible RGB components when all sensor values are positive, as can
+occur in full spectrum captures through a three-band filter.
+
+Full spectrum recipes set `rawColor` with three layer gains and a row-major 3x3
+matrix. The renderer uses `A * matrix * diag(gains / middle_gain) * inverse(camera_to_rgb)`
+instead of temperature/tint and the visible-light camera transform. The exposure
+anchor `A` keeps as-shot neutral luminance. Camera profiles and sensor monochrome
+must be unset in this path. Signed values and highlight headroom remain available.
+
+The frontend Aerochrome preset uses an empirical raw mix and Ektachrome 100
+(`film: 15`, `negative: true`). It starts with the current raw gains, or as-shot
+gains when entering raw mode. Pick a cloud before judging the result. No FCBlue
+profile or Kelvin offset is applied. This is a manually tuned DP2 Merrill
+550/660/850 nm approximation, not measured Aerochrome film data or a spectral
+separation. See [the preset notes](assets/AEROCHROME.md) for samples and limits.
+
+The `raw_patches` example measures unrotated source rectangles and renders a
+preview, with an optional recipe or sidecar. It reports signed raw-layer and
+matrix-output statistics without changing the input. Output PNGs must be new files.
+
+Processing is geometric sampling → white balance/exposure → optional sensor-layer
+monochrome → highlights/shadows → sharpening/texture/clarity → optional spectral film
+→ contrast/saturation/vibrance/HSL/color wheels/curves → whites/blacks → output
+primaries/transfer curve. Sharpening, texture and clarity scale log-ratio frequency
+bands of the scene-linear image, with band sizes in source pixels. An
+explicit Merrill or dp Quattro camera profile renders through Sigma's native
+Color Mode from x3f-sys: the scene goes back to camera BMT and on to native
+counts, then takes Merrill ColorDQ, the mode's tone curve per channel and its
+output matrix. With film enabled, this camera look runs before film exposure,
+with unit metering gain because the camera curve has already mapped scene gray.
+It needs the `color_mode_calibration` that `prepare_scene_linear`
+measures, and the file's profiles from `read_camera_profiles` attached with
+`PreparedImage::with_camera_profiles`. Other cameras, and images without that
+calibration, use a tone curve fitted to Sigma's in-camera JPEGs: it maps 18%
+gray to 0.40, adds a toe and rolls highlights off toward display white, per
+channel on linear Rec.2020 primaries so Adobe RGB and ProPhoto exports keep their
+wide-gamut colours. Film without a camera profile uses the measured paper/film
+response for its tone transform. Whites and blacks set the white and black points
+(levels) in the perceptual representation, after every other control. A raised
+floor or lowered ceiling clamps luminance only, so wide-gamut colours survive.
+`EditRecipe::default()` enables film; an explicit `film: None` selects digital rendering.
+Curves operate in a perceptual sRGB representation with linear interpolation and
+endpoint extrapolation to retain out-of-gamut color until final output conversion.
+
+`monochrome: null` preserves color and is also the default for older recipes.
+Enable it with `monochrome: { filter: "neutral" }`; the filter can be `neutral`,
+`red`, `orange`, `yellow`, `green`, or `blue`. The inverse camera-to-RGB matrix
+recovers corrected, normalized Foveon Bottom/Middle/Top samples. Every layer is
+normalized to the camera response to neutral scene RGB before mixing, preserving
+neutral brightness and ISO exposure across filters. Bottom is red-sensitive,
+Middle green-sensitive, and Top blue-sensitive. The mixes are the grayscale
+mixes of the x3f-core DNG Monochrome camera profiles. The layer spectra overlap,
+so a filter subtracts its neighbor layers. The DNG has no orange profile; orange
+is halfway from yellow to red. A saturated color can mix below zero, and the
+output clips it to black.
+
+| Filter | Bottom | Middle | Top |
+|---|---:|---:|---:|
+| Neutral | 1/3 | 1/3 | 1/3 |
+| Red | 2 | -1 | 0 |
+| Orange | 7/4 | -3/4 | 0 |
+| Yellow | 3/2 | -1/2 | 0 |
+| Green | -1/2 | 2 | -1/2 |
+| Blue | 0 | -1 | 2 |
+
+These are layer mixes, rather than measured optical-filter transmission curves.
+They retain preceding RAW corrections and Quattro layer reconstruction. White
+balance adjusts the layer gains before mixing. A final luminance projection
+removes film, grain, and channel-curve tint; all supported output profiles receive
+equal RGB channels with the appropriate transfer curve.
+
+Film rendering follows spektrafilm experimental `28bf883`, based on the
+original spektrafilm-rs port. Linear
+sRGB is spectrally upsampled through a per-film 192x192 chromaticity LUT built
+from the bundled 81-wavelength irradiance table and the film's own log
+sensitivity - with spektrafilm's input gamut compression baked into that LUT,
+so out-of-gamut input chromaticities are handled before any per-pixel work -
+then developed against fitted density curves and chemistry contrast, coupled
+by stock-specific Langmuir DIR couplers with Gaussian and exponential
+inhibitor diffusion, grained by a stock-calibrated sublayer particle model, printed through a dichroic enlarger solved to a per-stock
+neutral, developed on the paper's fitted curves, and scanned back to linear
+sRGB across the same 81 wavelengths. Optional halation adds spectral scatter
+and a three-bounce reflection off the film base, each with a size and strength
+per channel. Scatter uses an exponential tail. Film selection applies stock
+halation defaults and preserves the current values when the stock is unchanged.
+Output gamut compression uses the upstream OkLCh knees in the selected output
+RGB space before encoding. These stages operate on spectral film densities.
+
+The scan applies spektrafilm's scanner white and black correction: the print's
+paper white and deepest black, or a slide's clear and densest film, map to sRGB
+0.98 and 0.01 before output gamut compression. The print (or film) exposure
+is corrected so mid-gray stays at
+0.184. A negative scanned directly is not corrected. In place of spektrafilm's
+auto exposure, the film exposes the camera's metered gray as its mid-gray: the
+scene value the camera's own tone curve renders as 18% gray (Sigma's Standard
+Color Mode for a prepared image, else the fitted digital curve).
+
+Halation, grain and DIR couplers are optional; `negative: true` scans the
+developed film and skips the paper. The 22 film and 9 paper indices are stable;
+use `STOCKS_JSON` for the UI. Existing recipes remain readable. Renderer version
+6 invalidates older rendered previews because the calibration and models changed.
+
+Grain uses stock RMS calibration, fitted sublayers, dye-cloud blur, microstructure
+and log-domain sharpening. A local mass correction replaces upstream's global
+image normalization so tiles and cropped regions use the same local result.
+This changes the grain texture slightly. Grain amount zero skips the grain chain.
+See [NOTICE](NOTICE) for the other X3Fuse workflow differences.
+
+Spatial parameters are physical (micrometres over a 35 mm frame) and are
+converted using the whole sensor frame at the current render scale, so a crop
+or a requested region never changes a diffusion size or a grain particle. The
+per-film upsampling LUT and the per-pair enlarger solve are cached separately:
+changing paper, print trim or exposure reuses the LUT.
+
+`RENDER_VERSION` identifies the rendered output rather than the API. Callers
+that persist rendered images must mix it into their cache keys, and it must be
+bumped whenever a change moves pixels; otherwise previews written by an older
+build are served next to freshly rendered exports.
+
+Crop coordinates refer to the full EXIF-oriented image before user quarter-turn
+rotation/straighten. Straighten fits the rotated rectangle inside the selected
+crop to avoid empty corners. `RenderOptions.region` refers to the final edited
+output; `max_dimension` caps that region's resolution. GPU affine sampling uses
+explicit bilinear interpolation of the f32 source, retaining signed/HDR samples
+without requiring optional float-texture filtering. Gaussian
+support is `ceil(3σ)`, normalized, separable, with actual sensor-edge clamping.
+Overlap extends outside crop/region edges, and grain coordinates are anchored to
+the original oriented image. Previews up to 2048 px render in one submission and
+readback when their expanded buffers fit the adapter limits; native exports and
+larger regions use 1024 px tiles, falling back to 512 px when a large diffusion
+radius would push the expanded tile past the buffer limit. Both paths retain the same overlap. One cached
+working set reuses scratch/readback buffers, bind groups, and separate aligned
+uniform slots for each pass; its capacity grows to the largest preview/tile,
+with each buffer capped at 128 MiB as well as the device limits.
+Cancellation discards work/results between submissions and during readback;
+already submitted GPU commands remain owned by wgpu until completion. Device
+loss, allocation/validation errors, and a 60-second per-tile timeout are surfaced.
+
+Checks:
+
+```sh
+cargo test --manifest-path src-tauri/Cargo.toml -p x3f-render
+cargo test --manifest-path src-tauri/Cargo.toml -p x3f-render gpu_pipeline -- --ignored --nocapture
+cargo test --manifest-path src-tauri/Cargo.toml -p x3f-render gpu_experimental_reference -- --ignored --nocapture
+cargo test --manifest-path src-tauri/Cargo.toml -p x3f-render gpu_stock_grain_statistics -- --ignored --nocapture
+cargo run --release --manifest-path src-tauri/Cargo.toml -p x3f-render --example render -- input.X3F preview.png 2
+cargo run --release --manifest-path src-tauri/Cargo.toml -p x3f-render --example benchmark -- input.X3F 5
+cargo run --release --manifest-path src-tauri/Cargo.toml -p x3f-render --example benchmark -- input.X3F 5 red
+```
+
+The explicit GPU tests fail if hardware is unavailable. They cover compatible
+film/paper combinations, experimental reference patches, output encoders/profiles,
+crop/region/tile/grain consistency, GPU/CPU geometry parity, and cancellation.
+A PNG example is a 1600-pixel preview; JPEG/TIFF examples render native
+resolution. [assets/PROVENANCE.md](assets/PROVENANCE.md) records the experimental
+source revision, independent reference generation and checks.
+
+The bounded benchmark warms each resolution, changes exposure on every measured
+request, and reports median rendering and lossless PNG encoding separately for
+512/768/1024/2048-pixel digital and physical-film previews. It retains one renderer
+and one validated source, matching an editing session; source decode and GPU
+startup are excluded from adjustment latency.
+
+For desktop development, optimize `x3f-render`, `x3f-core`, `image`, and `png`
+through the application's `[profile.dev.package.<name>]` overrides. Optimizing
+`image` alone leaves PNG row filtering unoptimized: on the M1 Max Quattro sample,
+that made a 2048-pixel preview take about one second to encode despite a 143 ms
+GPU render. The benchmark exposes the encoding cost separately for this reason.
