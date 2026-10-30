@@ -45,10 +45,10 @@ private struct ContentView: View {
             .navigationTitle("X3Fuse Native")
             .toolbar {
                 Button { importing = true } label: { Label("Import", systemImage: "plus") }
-                    .disabled(model.isImporting || model.isBenchmarking || model.isExporting)
+                    .disabled(model.isImporting || model.isBenchmarking || model.isExporting || model.isTransferringRecipe)
                 Button { licenses = true } label: { Label("Licenses", systemImage: "info.circle") }
             }
-            .disabled(model.isExporting || model.isBenchmarking)
+            .disabled(model.isExporting || model.isBenchmarking || model.isTransferringRecipe)
         } detail: {
             if let asset = model.selectedAsset {
                 EditorView(model: model)
@@ -103,6 +103,9 @@ private struct LicensesView: View {
 
 private struct EditorView: View {
     @ObservedObject var model: AppModel
+    @State private var importingSidecar = false
+    @State private var pendingSidecar: URL?
+    @State private var sidecarAssetID: UUID?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -117,38 +120,91 @@ private struct EditorView: View {
                     HStack {
                         if model.isRendering || model.isExporting { ProgressView().controlSize(.small) }
                         Text(model.status).font(.caption).foregroundStyle(.secondary)
+                        if model.currentEdits == nil && !model.selectionLoading {
+                            Button("Reload") { model.select(model.selectedID) }
+                        }
                     }
                     VStack(spacing: 14) {
                         control("Exposure", value: Binding(get: { model.settings.exposure }, set: { value in model.changeSettings { $0.exposure = value } }),
                                 range: -5...5, step: 0.1, display: String(format: "%+.1f EV", model.settings.exposure))
-                        Toggle("As-shot white balance", isOn: Binding(get: { model.settings.temperature == nil }, set: { asShot in
-                            model.changeSettings { $0.temperature = asShot ? nil : model.asShotTemperature; $0.tint = 0 }
+                        DisclosureGroup("Light and color") {
+                            ForEach([("contrast", "Contrast"), ("highlights", "Highlights"), ("shadows", "Shadows"),
+                                     ("whites", "Whites"), ("blacks", "Blacks"), ("saturation", "Saturation"),
+                                     ("vibrance", "Vibrance")], id: \.0) { field, title in
+                                control(title, value: Binding(get: { model.settings[field] }, set: { value in model.changeSettings { $0[field] = value } }),
+                                        range: -100...100, step: 1, display: String(format: "%+.0f", model.settings[field]))
+                            }
+                        }
+                        Toggle("As-shot white balance", isOn: Binding(get: {
+                            model.settings.temperature == nil && !model.settings.hasWhiteBalanceGains && model.settings.tint == 0
+                        }, set: { asShot in
+                            model.changeSettings {
+                                $0.temperature = asShot ? nil : model.asShotTemperature
+                                $0.tint = 0
+                                $0.fields["whiteBalanceGains"] = .null
+                            }
                         }))
-                        if model.settings.temperature != nil {
-                            control("Temperature", value: Binding(get: { model.settings.temperature ?? model.asShotTemperature }, set: { value in model.changeSettings { $0.temperature = value } }),
-                                    range: 2000...14000, step: 50, display: "\(Int(model.settings.temperature ?? model.asShotTemperature)) K")
-                            control("Tint", value: Binding(get: { model.settings.tint }, set: { value in model.changeSettings { $0.tint = value } }),
-                                    range: -150...150, step: 1, display: String(format: "%+.0f", model.settings.tint))
+                        if model.settings.temperature != nil || model.settings.hasWhiteBalanceGains || model.settings.tint != 0 {
+                            control("Temperature", value: Binding(get: { model.settings.temperature ?? model.asShotTemperature }, set: { value in model.changeSettings { $0.temperature = value; $0.fields["whiteBalanceGains"] = .null } }),
+                                    range: 500...50000, step: 50, display: "\(Int(model.settings.temperature ?? model.asShotTemperature)) K")
+                            control("Tint", value: Binding(get: { model.settings.tint }, set: { value in model.changeSettings { $0.tint = value; $0.temperature = $0.temperature ?? model.asShotTemperature; $0.fields["whiteBalanceGains"] = .null } }),
+                                    range: -2000...2000, step: 1, display: String(format: "%+.0f", model.settings.tint))
+                        }
+                        Toggle("Film", isOn: Binding(get: { model.settings.film != nil }, set: { model.setFilmEnabled($0) }))
+                        if model.settings.film != nil, let catalog = model.imageInfo?.catalog {
+                            Picker("Film stock", selection: Binding(get: { model.settings.filmStock ?? 0 }, set: { model.selectFilm($0) })) {
+                                ForEach(catalog.films) { stock in Text(stock.name).tag(stock.index) }
+                            }
+                            Text("Film previews can take longer. Other film parameters are preserved.").font(.caption).foregroundStyle(.secondary)
                         }
                         HStack {
-                            Button("Reset edits") { model.changeSettings { $0 = EditSettings() } }
+                            Button("Reset edits") { model.resetEdits() }
                             Spacer()
-                            Button("Reload") { model.requestPreview() }
+                            Button("Reload") { if model.currentEdits == nil { model.select(model.selectedID) } else { model.requestPreview() } }
                         }
                     }
-                    .disabled(model.isExporting || model.isBenchmarking || model.selectionLoading)
-                    Text("Calibrated RAW color · Film disabled · X3I uses the middle exposure").font(.caption).foregroundStyle(.secondary)
+                    .disabled(model.isExporting || model.isBenchmarking || model.isTransferringRecipe || model.selectionLoading || model.currentEdits == nil)
+                    Text("Calibrated RAW color · X3I uses the middle exposure").font(.caption).foregroundStyle(.secondary)
                     if let url = model.exportURL {
-                        ShareLink(item: url) { Label("Share exported JPEG", systemImage: "square.and.arrow.up") }
+                        ShareLink(item: url) { Label("Share exported file", systemImage: "square.and.arrow.up") }
                     }
                 }.padding()
             }
             .frame(maxHeight: 340)
         }
         .toolbar {
-            Button { model.export() } label: { Label("Export JPEG", systemImage: "square.and.arrow.up") }
-                .disabled(model.frame == nil || model.isExporting || model.isBenchmarking)
+            Menu {
+                Section("Rendered image") {
+                    Button("JPEG") { model.export(.jpeg) }
+                    Button("16-bit TIFF (sRGB)") { model.export(.tiff) }
+                }
+                Section("Original RAW") {
+                    Button("Original DNG") { model.export(.dng) }
+                    Text("DNG does not bake edits. Core EXIF metadata only.")
+                }
+                Section("Desktop edits") {
+                    Button("Import sidecar…") { sidecarAssetID = model.selectedID; importingSidecar = true }
+                    Button("Export sidecar") { model.exportSidecar() }
+                }
+            } label: { Label("Export and recipes", systemImage: "square.and.arrow.up") }
+            .disabled(model.currentEdits == nil || model.isExporting || model.isBenchmarking || model.isTransferringRecipe || model.selectionLoading)
         }
+        .fileImporter(isPresented: $importingSidecar, allowedContentTypes: [.json], allowsMultipleSelection: false) { result in
+            switch result {
+            case .success(let urls): pendingSidecar = urls.first
+            case .failure(let error): model.message = error.localizedDescription
+            }
+        }
+        .confirmationDialog("Replace current edits?", isPresented: Binding(get: { pendingSidecar != nil }, set: { if !$0 { pendingSidecar = nil } })) {
+            Button("Replace edits", role: .destructive) {
+                if let url = pendingSidecar, sidecarAssetID == model.selectedID { model.importSidecar(url) }
+                pendingSidecar = nil
+            }
+            Button("Cancel", role: .cancel) { pendingSidecar = nil }
+        } message: {
+            Text("Apply the selected desktop sidecar after validating it against this RAW image. The original RAW and sidecar files stay unchanged.")
+        }
+
     }
 
     private func control(_ title: String, value: Binding<Double>, range: ClosedRange<Double>, step: Double, display: String) -> some View {

@@ -3,12 +3,14 @@
 //! The engine prepares the RAW the same way as the desktop editor: highlight
 //! recovery on, the recipe denoise, the camera calibration from the file, and
 //! `Renderer::render_prepared`.
-use serde_json::{json, Value};
+mod edits;
+pub use edits::Document;
+use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::{
     ffi::{c_char, c_void, CStr, CString},
     fs,
-    io::{Read, Write},
+    io::Read,
     panic::{catch_unwind, AssertUnwindSafe},
     path::{Path, PathBuf},
     ptr,
@@ -31,6 +33,7 @@ pub const X3F_ERR_GPU: i32 = 4;
 pub const X3F_ERR_IO: i32 = 5;
 pub const X3F_ERR_INTERNAL: i32 = 6;
 pub const X3F_ERR_EXISTS: i32 = 7;
+pub const X3F_ERR_CONFLICT: i32 = 8;
 
 #[derive(Debug)]
 pub struct Error(i32, String);
@@ -152,6 +155,28 @@ pub struct Session {
     /// None after a failed or cancelled preparation. The next render retries.
     prepared: Option<PreparedImage>,
     prepared_key: String,
+    /// The source file identity when it was hashed.
+    stamp: Stamp,
+}
+
+/// Size, times and identity. A change means the hash must be read again.
+#[derive(PartialEq, Eq)]
+struct Stamp(u64, i64, i64, u64, u64, i64, i64);
+
+impl Stamp {
+    fn read(path: &Path) -> Result<Self> {
+        use std::os::unix::fs::MetadataExt;
+        let m = fs::metadata(path)?;
+        Ok(Self(
+            m.len(),
+            m.mtime(),
+            m.mtime_nsec(),
+            m.dev(),
+            m.ino(),
+            m.ctime(),
+            m.ctime_nsec(),
+        ))
+    }
 }
 
 fn prepare(
@@ -174,6 +199,7 @@ fn prepare(
 impl Session {
     pub fn open(path: &Path, cancel: &AtomicBool) -> Result<Self> {
         let kind = source_kind(path)?;
+        let stamp = Stamp::read(path)?;
         let revision = sha256(path, cancel)?;
         let profiles = x3f_render::read_camera_profiles(path, cancel)?;
         let crop = x3f_core::read_as_shot_crop(path)?.map(|[x, y, width, height]| Crop {
@@ -213,6 +239,7 @@ impl Session {
             size,
             as_shot: prepared.as_shot_white_balance(),
             prepared: Some(prepared),
+            stamp,
         })
     }
 
@@ -234,29 +261,151 @@ impl Session {
         .to_string())
     }
 
-    /// Replaces the top-level keys of the default recipe with those of `json`.
+    /// Parses a full recipe (a missing key takes `EditRecipe::default()`)
+    /// and applies the rules of this source.
     pub fn recipe(&self, json: &str) -> Result<EditRecipe> {
-        let edits: serde_json::Map<String, Value> =
-            serde_json::from_str(json).map_err(|e| invalid(format!("Recipe JSON: {e}")))?;
-        let Value::Object(mut recipe) =
-            serde_json::to_value(&self.default).map_err(|e| invalid(e.to_string()))?
-        else {
-            unreachable!("a struct serializes as an object")
-        };
-        recipe.extend(edits);
-        let recipe: EditRecipe = serde_json::from_value(Value::Object(recipe))
-            .map_err(|e| invalid(format!("Recipe: {e}")))?;
-        recipe.validate().map_err(invalid)?;
+        let recipe = edits::parse(json)?;
+        self.check_recipe(&recipe)?;
+        Ok(recipe)
+    }
+
+    fn check_recipe(&self, recipe: &EditRecipe) -> Result<()> {
         if recipe.dng_demosaic.is_some() {
             return Err(invalid("dngDemosaic applies only to DNG"));
         }
-        if self.kind == Kind::X3i && recipe.x3i_source != X3iSource::MiddleExposure {
+        if recipe.x3i_source != X3iSource::MiddleExposure {
             return Err(Error(
                 X3F_ERR_UNSUPPORTED,
                 "X3I merging is unavailable on iOS. Use the middle exposure.".into(),
             ));
         }
-        Ok(recipe)
+        Ok(())
+    }
+
+    pub fn edited(&self, recipe: &EditRecipe) -> bool {
+        !edits::matches_defaults(recipe, &self.default, false)
+    }
+
+    /// Checks a desktop document for this source. Returns it as version 2,
+    /// and whether it holds an edit.
+    pub fn document(&self, json: &str) -> Result<(Document, bool)> {
+        let mut document = edits::parse_document(json)?;
+        if document.source_revision != self.revision {
+            return Err(Error(
+                X3F_ERR_CONFLICT,
+                "The saved edits belong to different source contents. The file has been preserved."
+                    .into(),
+            ));
+        }
+        self.check_recipe(&document.recipe)?;
+        let legacy = document.version == 1;
+        let edited = !edits::matches_defaults(&document.recipe, &self.default, legacy);
+        if !edited {
+            document.recipe = self.default.clone();
+        }
+        document.version = 2;
+        Ok((document, edited))
+    }
+
+    /// Reads a document file of at most 1 MiB. None when there is no file.
+    fn read_document_file(path: &Path) -> Result<Option<String>> {
+        let file = match fs::File::open(path) {
+            Ok(file) => file,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(e.into()),
+        };
+        let mut bytes = Vec::new();
+        file.take(edits::JSON_LIMIT as u64 + 1)
+            .read_to_end(&mut bytes)?;
+        if bytes.len() > edits::JSON_LIMIT {
+            return Err(invalid("Edit document exceeds 1 MiB"));
+        }
+        String::from_utf8(bytes)
+            .map(Some)
+            .map_err(|_| invalid("Edit document is not UTF-8"))
+    }
+
+    pub fn read_sidecar(&self, path: &Path) -> Result<Option<(Document, bool)>> {
+        Self::read_document_file(path)?
+            .map(|json| self.document(&json))
+            .transpose()
+    }
+
+    /// Fails when the source file no longer has the session hash.
+    fn check_source(&self, cancel: &AtomicBool) -> Result<()> {
+        if Stamp::read(&self.path)? != self.stamp && sha256(&self.path, cancel)? != self.revision {
+            return Err(Error(
+                X3F_ERR_CONFLICT,
+                "Source contents changed; reopen the photo before saving".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// The desktop save: check against the file at `path` and `previous`,
+    /// then write a version 2 document atomically.
+    pub fn write_sidecar(
+        &self,
+        path: &Path,
+        recipe: &str,
+        revision: u64,
+        previous: Option<&str>,
+    ) -> Result<Document> {
+        let recipe = self.recipe(recipe)?;
+        edits::check_revision(revision)?;
+        let target = self.target(path)?;
+        let mut previous_ms = 0;
+        let mut previous_documents = Vec::new();
+        if let Some(json) = previous {
+            previous_documents.push(edits::parse_document(json)?);
+        }
+        if let Some(json) = Self::read_document_file(&target)? {
+            previous_documents.push(edits::parse_document(&json).map_err(|e| {
+                Error(
+                    X3F_ERR_CONFLICT,
+                    format!(
+                        "Cannot read the existing edits ({}). The file has been preserved.",
+                        e.1
+                    ),
+                )
+            })?);
+        }
+        for document in &previous_documents {
+            edits::check_previous(document, &self.revision, &recipe, revision)?;
+            previous_ms = previous_ms.max(document.updated_ms);
+        }
+        self.check_source(&AtomicBool::new(false))?;
+        let document = edits::new_document(&self.revision, recipe, revision, previous_ms)?;
+        let bytes = document.to_json();
+        publish(&target, true, &AtomicBool::new(false), |temp| {
+            fs::write(temp, bytes.as_bytes())?;
+            Ok(())
+        })?;
+        Ok(document)
+    }
+
+    /// The canonical output path. Fails for the source RAW, also through
+    /// another name.
+    fn target(&self, out: &Path) -> Result<PathBuf> {
+        let name = out
+            .file_name()
+            .ok_or_else(|| invalid("Output path has no file name"))?;
+        let dir = out
+            .parent()
+            .filter(|d| !d.as_os_str().is_empty())
+            .ok_or_else(|| invalid("Output path needs a directory"))?
+            .canonicalize()?;
+        let target = dir.join(name);
+        let source = fs::metadata(&self.path)?;
+        let same_file = |m: &fs::Metadata| {
+            use std::os::unix::fs::MetadataExt;
+            m.dev() == source.dev() && m.ino() == source.ino()
+        };
+        if target == self.path.canonicalize()? || fs::metadata(&target).is_ok_and(|m| same_file(&m))
+        {
+            return Err(invalid("Output cannot replace the source file"));
+        }
+        Ok(target)
     }
 
     fn render_with(
@@ -321,64 +470,161 @@ impl Session {
         if !(1..=100).contains(&quality) {
             return Err(invalid("JPEG quality must be 1..100"));
         }
-        let name = out
-            .file_name()
-            .ok_or_else(|| invalid("Output path has no file name"))?;
-        let dir = out
-            .parent()
-            .filter(|d| !d.as_os_str().is_empty())
-            .ok_or_else(|| invalid("Output path needs a directory"))?
-            .canonicalize()?;
-        let target = dir.join(name);
-        // Never write over the source RAW, also through another name.
-        let source = fs::metadata(&self.path)?;
-        let same_file = |m: &fs::Metadata| {
-            use std::os::unix::fs::MetadataExt;
-            m.dev() == source.dev() && m.ino() == source.ino()
-        };
-        if target == self.path.canonicalize()? || fs::metadata(&target).is_ok_and(|m| same_file(&m))
-        {
-            return Err(invalid("Export cannot replace the source file"));
-        }
-        if !replace && fs::symlink_metadata(&target).is_ok() {
-            return Err(Error(X3F_ERR_EXISTS, "Export file exists".into()));
-        }
+        let target = self.target(out)?;
+        exists(&target, replace)?;
         let image = self.render_with(json, RenderOptions::default(), cancel)?;
         check(cancel)?;
         let bytes = image.jpeg(quality)?;
         drop(image);
-        let mut temp_name = std::ffi::OsString::from(".");
-        temp_name.push(name);
-        temp_name.push(format!(".{}.partial", std::process::id()));
-        let temp = dir.join(temp_name);
-        let written = (|| {
-            let mut file = fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&temp)?;
-            file.write_all(&bytes)?;
-            file.sync_all()?;
-            check(cancel)?;
-            if replace {
-                fs::rename(&temp, &target)?;
-            } else {
-                // A hard link fails when the target exists, so a file made
-                // since the check above is kept.
-                fs::hard_link(&temp, &target).map_err(|e| match e.kind() {
-                    std::io::ErrorKind::AlreadyExists => {
-                        Error(X3F_ERR_EXISTS, "Export file exists".into())
-                    }
-                    _ => e.into(),
-                })?;
-                fs::remove_file(&temp)?;
-            }
+        publish(&target, replace, cancel, |temp| {
+            fs::write(temp, &bytes)?;
             Ok(())
-        })();
-        if written.is_err() {
-            let _ = fs::remove_file(&temp);
-        }
-        written
+        })
     }
+
+    pub fn export_tiff(
+        &mut self,
+        json: &str,
+        out: &Path,
+        color_profile: x3f_render::ColorProfile,
+        compress: bool,
+        replace: bool,
+        cancel: &AtomicBool,
+    ) -> Result<()> {
+        let target = self.target(out)?;
+        exists(&target, replace)?;
+        let image = self.render_with(
+            json,
+            RenderOptions {
+                color_profile,
+                ..Default::default()
+            },
+            cancel,
+        )?;
+        check(cancel)?;
+        publish(&target, replace, cancel, |temp| {
+            image.write_tiff(temp, compress, cancel)?;
+            Ok(())
+        })
+    }
+
+    /// The desktop batch DNG (conversion.rs `process_options` and `convert`).
+    /// Returns the warnings.
+    pub fn export_dng(
+        &self,
+        out: &Path,
+        opcodes: Option<&Path>,
+        highlight_recovery: bool,
+        replace: bool,
+        cancel: &AtomicBool,
+    ) -> Result<Vec<String>> {
+        use x3f_core::ColorMode::{AsShot, Standard};
+        if !highlight_recovery && opcodes.is_none_or(|dir| !dir.is_dir()) {
+            return Err(invalid(
+                "DNG export needs the opcodes folder for lens correction",
+            ));
+        }
+        let target = self.target(out)?;
+        exists(&target, replace)?;
+        let mut options = x3f_core::ProcessOptions {
+            color_encoding: x3f_core::ColorEncoding::Srgb,
+            denoise_intensity: 10,
+            denoise_options: Default::default(),
+            compress: false,
+            dng_highlight_recovery: highlight_recovery,
+            color_mode: Some(AsShot),
+            opcodes_dir: (!highlight_recovery).then(|| opcodes.unwrap().to_owned()),
+            x3i_source: X3iSource::MiddleExposure,
+            ..Default::default()
+        };
+        // Frame 0 holds the camera metadata of an X3I.
+        let modes = match self.kind {
+            Kind::X3f => x3f_core::Reader::open(&self.path),
+            Kind::X3i => x3f_core::X3iContainer::open(&self.path).and_then(|c| c.open_frame(0)),
+        }
+        .and_then(|mut reader| reader.available_color_modes());
+        if !modes.is_ok_and(|modes| modes.contains(&Standard)) {
+            // As shot is the DNG default, so no Color Modes is not a warning.
+            options.color_mode = None;
+        }
+        let mut warnings = Vec::new();
+        publish(&target, replace, cancel, |temp| {
+            let report = loop {
+                match x3f_core::convert_file(
+                    &self.path,
+                    temp,
+                    x3f_core::OutputFormat::Dng,
+                    &options,
+                    cancel,
+                    |_| (),
+                ) {
+                    // Core reports an unusable mode as invalid data.
+                    Err(x3f_core::Error::InvalidData(error)) if options.color_mode.is_some() => {
+                        let used = (options.color_mode != Some(Standard)).then_some(Standard);
+                        warnings.push(match used {
+                            Some(_) => {
+                                format!("Used the Standard color mode instead of as shot: {error}")
+                            }
+                            None => format!("Exported without a color mode: {error}"),
+                        });
+                        options.color_mode = used;
+                    }
+                    result => break result?,
+                }
+            };
+            warnings.extend(report.warnings);
+            Ok(())
+        })?;
+        Ok(warnings)
+    }
+}
+
+/// Fails when `target` exists and `replace` is false.
+fn exists(target: &Path, replace: bool) -> Result<()> {
+    if !replace && fs::symlink_metadata(target).is_ok() {
+        return Err(Error(X3F_ERR_EXISTS, "Export file exists".into()));
+    }
+    Ok(())
+}
+
+/// Writes through `write` to a temporary file next to `target`, syncs it,
+/// then moves it to `target`. Without `replace`, an existing target is kept.
+/// Removes the temporary file on error or cancel.
+fn publish(
+    target: &Path,
+    replace: bool,
+    cancel: &AtomicBool,
+    write: impl FnOnce(&Path) -> Result<()>,
+) -> Result<()> {
+    let name = target.file_name().expect("target has a name");
+    let mut temp_name = std::ffi::OsString::from(".");
+    temp_name.push(name);
+    temp_name.push(format!(".{}.partial", std::process::id()));
+    let temp = target.with_file_name(temp_name);
+    let _ = fs::remove_file(&temp);
+    let written = (|| {
+        write(&temp)?;
+        fs::File::open(&temp)?.sync_all()?;
+        check(cancel)?;
+        if replace {
+            fs::rename(&temp, target)?;
+        } else {
+            // A hard link fails when the target exists, so a file made since
+            // the first check is kept.
+            fs::hard_link(&temp, target).map_err(|e| match e.kind() {
+                std::io::ErrorKind::AlreadyExists => {
+                    Error(X3F_ERR_EXISTS, "Export file exists".into())
+                }
+                _ => e.into(),
+            })?;
+            fs::remove_file(&temp)?;
+        }
+        Ok(())
+    })();
+    if written.is_err() {
+        let _ = fs::remove_file(&temp);
+    }
+    written
 }
 
 // C boundary.
@@ -428,7 +674,26 @@ fn token(cancel: *const X3fCancel, none: &AtomicBool) -> &AtomicBool {
     unsafe { cancel.as_ref() }.map_or(none, |c| &c.0)
 }
 
-fn session<'a>(session: *mut X3fSession) -> Result<std::sync::MutexGuard<'a, Session>> {
+/// Writes an owned string to `out`.
+fn put(out: *mut *mut c_char, what: &str, value: String) -> Result<()> {
+    if out.is_null() {
+        return Err(invalid(format!("{what} is NULL")));
+    }
+    let value = CString::new(value).map_err(|e| invalid(e.to_string()))?;
+    // SAFETY: checked for NULL.
+    unsafe { *out = value.into_raw() };
+    Ok(())
+}
+
+/// Sets an optional output pointer to NULL before work starts.
+fn clear(out: *mut *mut c_char) {
+    if !out.is_null() {
+        // SAFETY: the caller passes a writable pointer or NULL.
+        unsafe { *out = ptr::null_mut() };
+    }
+}
+
+fn session<'a>(session: *const X3fSession) -> Result<std::sync::MutexGuard<'a, Session>> {
     // SAFETY: the caller passes a live session or NULL.
     let session = unsafe { session.as_ref() }.ok_or_else(|| invalid("session is NULL"))?;
     session
@@ -562,6 +827,326 @@ pub unsafe extern "C" fn x3f_session_export_jpeg(
         let out = unsafe { text(out_path, "out_path") }?;
         let none = AtomicBool::new(false);
         session(s)?.export_jpeg(json, Path::new(out), quality, replace, token(cancel, &none))
+    })
+}
+
+/// # Safety
+/// See the header.
+#[no_mangle]
+pub unsafe extern "C" fn x3f_session_export_tiff(
+    s: *mut X3fSession,
+    recipe_json: *const c_char,
+    out_path: *const c_char,
+    color_profile: u32,
+    compress: bool,
+    replace: bool,
+    cancel: *const X3fCancel,
+    error: *mut *mut c_char,
+) -> i32 {
+    ffi(error, || {
+        // SAFETY: the caller passes strings or NULL.
+        let json = unsafe { text(recipe_json, "recipe_json") }?;
+        // SAFETY: as above.
+        let out = unsafe { text(out_path, "out_path") }?;
+        let profile = match color_profile {
+            0 => x3f_render::ColorProfile::Srgb,
+            1 => x3f_render::ColorProfile::AdobeRgb,
+            2 => x3f_render::ColorProfile::ProPhotoRgb,
+            _ => return Err(invalid("Unknown color profile")),
+        };
+        let none = AtomicBool::new(false);
+        session(s)?.export_tiff(
+            json,
+            Path::new(out),
+            profile,
+            compress,
+            replace,
+            token(cancel, &none),
+        )
+    })
+}
+
+/// # Safety
+/// See the header.
+#[no_mangle]
+pub unsafe extern "C" fn x3f_session_export_dng(
+    s: *mut X3fSession,
+    out_path: *const c_char,
+    opcodes_dir: *const c_char,
+    highlight_recovery: bool,
+    replace: bool,
+    cancel: *const X3fCancel,
+    warnings_json: *mut *mut c_char,
+    error: *mut *mut c_char,
+) -> i32 {
+    clear(warnings_json);
+    ffi(error, || {
+        // SAFETY: the caller passes strings or NULL.
+        let out = unsafe { text(out_path, "out_path") }?;
+        let opcodes = if opcodes_dir.is_null() {
+            None
+        } else {
+            // SAFETY: as above.
+            Some(Path::new(unsafe { text(opcodes_dir, "opcodes_dir") }?))
+        };
+        let none = AtomicBool::new(false);
+        let warnings = session(s)?.export_dng(
+            Path::new(out),
+            opcodes,
+            highlight_recovery,
+            replace,
+            token(cancel, &none),
+        )?;
+        if !warnings_json.is_null() {
+            put(warnings_json, "warnings_json", json!(warnings).to_string())?;
+        }
+        Ok(())
+    })
+}
+
+/// # Safety
+/// See the header.
+#[no_mangle]
+pub unsafe extern "C" fn x3f_recipe_normalize(
+    s: *const X3fSession,
+    recipe_json: *const c_char,
+    out_json: *mut *mut c_char,
+    error: *mut *mut c_char,
+) -> i32 {
+    clear(out_json);
+    ffi(error, || {
+        // SAFETY: the caller passes a string or NULL.
+        let json = unsafe { text(recipe_json, "recipe_json") }?;
+        let recipe = if s.is_null() {
+            edits::parse(json)?
+        } else {
+            session(s)?.recipe(json)?
+        };
+        put(out_json, "out_json", edits::canonical(&recipe))
+    })
+}
+
+/// # Safety
+/// See the header.
+#[no_mangle]
+pub unsafe extern "C" fn x3f_recipe_patch(
+    recipe_json: *const c_char,
+    patch_json: *const c_char,
+    out_json: *mut *mut c_char,
+    error: *mut *mut c_char,
+) -> i32 {
+    clear(out_json);
+    ffi(error, || {
+        // SAFETY: the caller passes strings or NULL.
+        let recipe = unsafe { text(recipe_json, "recipe_json") }?;
+        // SAFETY: as above.
+        let patch = unsafe { text(patch_json, "patch_json") }?;
+        put(
+            out_json,
+            "out_json",
+            edits::canonical(&edits::patch(recipe, patch)?),
+        )
+    })
+}
+
+/// # Safety
+/// See the header.
+#[no_mangle]
+pub unsafe extern "C" fn x3f_recipe_apply_look(
+    recipe_json: *const c_char,
+    look_id: *const c_char,
+    out_json: *mut *mut c_char,
+    error: *mut *mut c_char,
+) -> i32 {
+    clear(out_json);
+    ffi(error, || {
+        // SAFETY: the caller passes strings or NULL.
+        let recipe = unsafe { text(recipe_json, "recipe_json") }?;
+        // SAFETY: as above.
+        let look = unsafe { text(look_id, "look_id") }?;
+        put(
+            out_json,
+            "out_json",
+            edits::canonical(&edits::apply_look(recipe, look)?),
+        )
+    })
+}
+
+/// # Safety
+/// See the header.
+#[no_mangle]
+pub unsafe extern "C" fn x3f_recipe_edited(
+    s: *const X3fSession,
+    recipe_json: *const c_char,
+    edited: *mut bool,
+    error: *mut *mut c_char,
+) -> i32 {
+    ffi(error, || {
+        // SAFETY: the caller passes a string or NULL.
+        let json = unsafe { text(recipe_json, "recipe_json") }?;
+        // SAFETY: the caller passes a writable pointer or NULL.
+        let edited = unsafe { edited.as_mut() }.ok_or_else(|| invalid("edited is NULL"))?;
+        let session = session(s)?;
+        *edited = session.edited(&session.recipe(json)?);
+        Ok(())
+    })
+}
+
+/// # Safety
+/// See the header.
+#[no_mangle]
+pub unsafe extern "C" fn x3f_film_catalog(
+    out_json: *mut *mut c_char,
+    error: *mut *mut c_char,
+) -> i32 {
+    clear(out_json);
+    ffi(error, || put(out_json, "out_json", edits::catalog()))
+}
+
+/// Writes a document, its canonical recipe and the edited flag.
+fn put_document(
+    document: &Document,
+    is_edited: bool,
+    out_json: *mut *mut c_char,
+    out_recipe_json: *mut *mut c_char,
+    edited: *mut bool,
+) -> Result<()> {
+    put(out_json, "out_json", document.to_json())?;
+    if !out_recipe_json.is_null() {
+        put(
+            out_recipe_json,
+            "out_recipe_json",
+            edits::canonical(&document.recipe),
+        )?;
+    }
+    // SAFETY: the caller passes a writable pointer or NULL.
+    if let Some(edited) = unsafe { edited.as_mut() } {
+        *edited = is_edited;
+    }
+    Ok(())
+}
+
+/// Frees what an output pointer holds after a failure.
+fn release(out: *mut *mut c_char) {
+    if !out.is_null() {
+        // SAFETY: the caller passes a writable pointer; the value is NULL or ours.
+        unsafe {
+            x3f_string_free(*out);
+            *out = ptr::null_mut();
+        }
+    }
+}
+
+/// # Safety
+/// See the header.
+#[no_mangle]
+pub unsafe extern "C" fn x3f_document_validate(
+    s: *const X3fSession,
+    document_json: *const c_char,
+    out_json: *mut *mut c_char,
+    out_recipe_json: *mut *mut c_char,
+    edited: *mut bool,
+    error: *mut *mut c_char,
+) -> i32 {
+    clear(out_json);
+    clear(out_recipe_json);
+    let status = ffi(error, || {
+        // SAFETY: the caller passes a string or NULL.
+        let json = unsafe { text(document_json, "document_json") }?;
+        let (document, is_edited) = session(s)?.document(json)?;
+        put_document(&document, is_edited, out_json, out_recipe_json, edited)
+    });
+    if status != X3F_OK {
+        release(out_json);
+        release(out_recipe_json);
+    }
+    status
+}
+
+/// # Safety
+/// See the header.
+#[no_mangle]
+pub unsafe extern "C" fn x3f_document_check_previous(
+    previous_json: *const c_char,
+    incoming_json: *const c_char,
+    error: *mut *mut c_char,
+) -> i32 {
+    ffi(error, || {
+        // SAFETY: the caller passes strings or NULL.
+        let previous = edits::parse_document(unsafe { text(previous_json, "previous_json") }?)?;
+        // SAFETY: as above.
+        let incoming = edits::parse_document(unsafe { text(incoming_json, "incoming_json") }?)?;
+        edits::check_previous(
+            &previous,
+            &incoming.source_revision,
+            &incoming.recipe,
+            incoming.revision,
+        )
+    })
+}
+
+/// # Safety
+/// See the header.
+#[no_mangle]
+pub unsafe extern "C" fn x3f_sidecar_read(
+    s: *const X3fSession,
+    path: *const c_char,
+    out_json: *mut *mut c_char,
+    out_recipe_json: *mut *mut c_char,
+    edited: *mut bool,
+    error: *mut *mut c_char,
+) -> i32 {
+    clear(out_json);
+    clear(out_recipe_json);
+    let status = ffi(error, || {
+        // SAFETY: the caller passes a string or NULL.
+        let path = unsafe { text(path, "path") }?;
+        if out_json.is_null() {
+            return Err(invalid("out_json is NULL"));
+        }
+        match session(s)?.read_sidecar(Path::new(path))? {
+            Some((document, is_edited)) => {
+                put_document(&document, is_edited, out_json, out_recipe_json, edited)
+            }
+            None => Ok(()),
+        }
+    });
+    if status != X3F_OK {
+        release(out_json);
+        release(out_recipe_json);
+    }
+    status
+}
+
+/// # Safety
+/// See the header.
+#[no_mangle]
+pub unsafe extern "C" fn x3f_sidecar_write(
+    s: *const X3fSession,
+    path: *const c_char,
+    recipe_json: *const c_char,
+    revision: u64,
+    previous_json: *const c_char,
+    out_json: *mut *mut c_char,
+    error: *mut *mut c_char,
+) -> i32 {
+    clear(out_json);
+    ffi(error, || {
+        // SAFETY: the caller passes strings or NULL.
+        let path = unsafe { text(path, "path") }?;
+        // SAFETY: as above.
+        let recipe = unsafe { text(recipe_json, "recipe_json") }?;
+        let previous = if previous_json.is_null() {
+            None
+        } else {
+            // SAFETY: as above.
+            Some(unsafe { text(previous_json, "previous_json") }?)
+        };
+        let document = session(s)?.write_sidecar(Path::new(path), recipe, revision, previous)?;
+        if !out_json.is_null() {
+            put(out_json, "out_json", document.to_json())?;
+        }
+        Ok(())
     })
 }
 

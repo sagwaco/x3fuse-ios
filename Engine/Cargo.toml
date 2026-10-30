@@ -15,6 +15,7 @@ crate-type = ["staticlib", "rlib"]
 # Same features as the desktop editor, so output matches.
 x3f-core = { version = "=0.4.0", features = ["gpu", "serde"] }
 x3f-render = { path = "../Vendor/x3f-render" }
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 
@@ -35,5 +36,6 @@ opt-level = 3
 
 [dev-dependencies]
 x3f-core = { version = "=0.4.0", features = ["gpu", "serde"] }
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"

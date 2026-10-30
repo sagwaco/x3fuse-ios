@@ -67,21 +67,45 @@ struct AssetStore {
         return asset
     }
 
-    func loadEdits(for asset: ImportedAsset) throws -> EditSettings {
+    func loadEdits(for asset: ImportedAsset) throws -> LoadedEdits {
         let url = editsURL(for: asset)
-        guard files.fileExists(atPath: url.path) else { return EditSettings() }
-        let envelope = try JSONDecoder().decode(NativeEdits.self, from: Data(contentsOf: url))
-        guard envelope.version == 1, envelope.assetID == asset.id, envelope.settings.isValid else {
-            throw CocoaError(.fileReadCorruptFile, userInfo: [NSLocalizedDescriptionKey: "Saved edits are not supported. The saved file will be kept unchanged."])
+        guard files.fileExists(atPath: url.path) else { return LoadedEdits(data: nil, content: .empty) }
+        let data = try Self.readBounded(url)
+        struct Header: Decodable { let version: Int; let assetID: UUID }
+        let header = try JSONDecoder().decode(Header.self, from: data)
+        guard header.assetID == asset.id else { throw EditStorageError("Saved edits belong to another asset. The file was kept unchanged.") }
+        switch header.version {
+        case 1:
+            struct Legacy: Decodable { let settings: LegacyEditSettings }
+            let settings = try JSONDecoder().decode(Legacy.self, from: data).settings
+            guard settings.isValid else { throw EditStorageError("Saved legacy edits are invalid. The file was kept unchanged.") }
+            return LoadedEdits(data: data, content: .legacy(settings))
+        case 2:
+            return LoadedEdits(data: data, content: .current(try JSONDecoder().decode(NativeEdits.self, from: data)))
+        default:
+            throw EditStorageError("Saved edits use a newer version. The file was kept unchanged.")
         }
-        return envelope.settings
     }
 
-    func saveEdits(_ settings: EditSettings, for asset: ImportedAsset) throws {
-        _ = try loadEdits(for: asset)
-        guard settings.isValid else { throw CocoaError(.fileWriteInvalidFileName) }
-        let envelope = NativeEdits(version: 1, assetID: asset.id, settings: settings)
-        try JSONEncoder().encode(envelope).write(to: editsURL(for: asset), options: .atomic)
+    func saveEdits(_ edits: NativeEdits, for asset: ImportedAsset, replacing expected: Data?) throws -> Data {
+        let current = try loadEdits(for: asset)
+        guard current.data == expected, edits.assetID == asset.id, edits.version == 2 else {
+            throw EditStorageError("Saved edits changed outside this editor. The file was kept unchanged.")
+        }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let data = try encoder.encode(edits)
+        guard data.count <= 1_048_576 else { throw EditStorageError("The recipe is larger than 1 MiB.") }
+        try data.write(to: editsURL(for: asset), options: .atomic)
+        return data
+    }
+
+    static func readBounded(_ url: URL) throws -> Data {
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        let data = try handle.read(upToCount: 1_048_577) ?? Data()
+        guard data.count <= 1_048_576 else { throw EditStorageError("The recipe is larger than 1 MiB.") }
+        return data
     }
 
     private func editsURL(for asset: ImportedAsset) -> URL {
@@ -89,50 +113,55 @@ struct AssetStore {
     }
 }
 
-private struct NativeEdits: Codable {
-    let version: Int
-    let assetID: UUID
-    let settings: EditSettings
-}
-
-struct EditSettings: Codable, Equatable {
-    var exposure = 0.0
-    var temperature: Double?
-    var tint = 0.0
-
-    var isValid: Bool {
-        exposure.isFinite && (-5...5).contains(exposure) && tint.isFinite && (-2000...2000).contains(tint)
-            && (temperature.map { $0.isFinite && (500...50000).contains($0) } ?? true)
-    }
-
-    func recipeJSON(defaults: [String: Any]) throws -> String {
-        guard isValid else { throw CocoaError(.coderInvalidValue) }
-        var recipe = defaults
-        recipe["exposure"] = exposure
-        recipe["temperature"] = temperature as Any? ?? NSNull()
-        recipe["tint"] = tint
-        recipe["whiteBalanceGains"] = NSNull()
-        recipe["film"] = NSNull()
-        return String(decoding: try JSONSerialization.data(withJSONObject: recipe), as: UTF8.self)
-    }
-}
-
 actor AssetLibrary {
     let store: AssetStore
+    private struct WriteToken { let data: Data? }
+    private var savedData: [UUID: WriteToken] = [:]
     init(store: AssetStore = .application) { self.store = store }
     func list() throws -> [ImportedAsset] { try store.list() }
     func importFile(_ url: URL) throws -> ImportedAsset { try store.importFile(url) }
-    func loadEdits(_ asset: ImportedAsset) throws -> EditSettings { try store.loadEdits(for: asset) }
-    func saveEdits(_ settings: EditSettings, asset: ImportedAsset) throws { try store.saveEdits(settings, for: asset) }
+    func loadEdits(_ asset: ImportedAsset) throws -> LoadedEdits { try store.loadEdits(for: asset) }
+
+    func acceptEdits(_ edits: NativeEdits, asset: ImportedAsset, replacing original: Data?, persist: Bool = true) throws {
+        if persist {
+            savedData[asset.id] = WriteToken(data: try store.saveEdits(edits, for: asset, replacing: original))
+        } else {
+            guard try store.loadEdits(for: asset).data == original else {
+                throw EditStorageError("Saved edits changed while the image was opening.")
+            }
+            savedData[asset.id] = WriteToken(data: original)
+        }
+    }
+
+    func saveEdits(_ edits: NativeEdits, asset: ImportedAsset) throws {
+        guard let expected = savedData[asset.id] else { throw EditStorageError("Open and validate the saved recipe before editing.") }
+        savedData[asset.id] = WriteToken(data: try store.saveEdits(edits, for: asset, replacing: expected.data))
+    }
+
+    func readSidecar(_ url: URL) throws -> String {
+        let accessed = url.startAccessingSecurityScopedResource()
+        defer { if accessed { url.stopAccessingSecurityScopedResource() } }
+        var result: Result<Data, Error> = .failure(CocoaError(.fileReadUnknown))
+        var error: NSError?
+        NSFileCoordinator().coordinate(readingItemAt: url, options: [], error: &error) { coordinated in
+            result = Result { try AssetStore.readBounded(coordinated) }
+        }
+        if let error { throw error }
+        let data = try result.get()
+        guard let text = String(data: data, encoding: .utf8) else { throw EditStorageError("The sidecar is not UTF-8 JSON.") }
+        return text
+    }
+
+
 }
 
 @MainActor
 final class EditSaveQueue {
-    var pending: [UUID: (ImportedAsset, EditSettings)] = [:]
+    var pending: [UUID: (ImportedAsset, NativeEdits)] = [:]
     private(set) var saving = false
     private var waiters: [CheckedContinuation<Void, Never>] = []
 
-    func save(using write: (EditSettings, ImportedAsset) async throws -> Void,
+    func save(using write: (NativeEdits, ImportedAsset) async throws -> Void,
               onError: (Error, ImportedAsset) -> Void) async {
         if saving {
             await withCheckedContinuation { waiters.append($0) }

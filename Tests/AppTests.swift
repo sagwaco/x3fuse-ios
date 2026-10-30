@@ -50,17 +50,17 @@ final class AppTests: XCTestCase {
     func testSaveFlushWaitsAndNewestEditIsWrittenLast() async throws {
         let queue = EditSaveQueue()
         let asset = ImportedAsset(id: UUID(), name: "photo.x3f", sourceName: "source.x3f", importedAt: Date())
-        queue.pending[asset.id] = (asset, EditSettings(exposure: 1))
+        queue.pending[asset.id] = (asset, try snapshot(asset: asset, exposure: 1))
         var writes: [Double] = []
         var gate: CheckedContinuation<Void, Never>?
         let saving = Task {
             await queue.save(using: { settings, _ in
-                writes.append(settings.exposure)
+                writes.append(settings.document.recipe.exposure)
                 if writes.count == 1 { await withCheckedContinuation { gate = $0 } }
             }, onError: { error, _ in XCTFail(error.localizedDescription) })
         }
         try await waitUntil { gate != nil }
-        queue.pending[asset.id] = (asset, EditSettings(exposure: 2))
+        queue.pending[asset.id] = (asset, try snapshot(asset: asset, exposure: 2))
         var flushFinished = false
         let flush = Task {
             await queue.save(using: { _, _ in XCTFail("The existing save loop must own the writes.") },
@@ -122,17 +122,34 @@ final class AppTests: XCTestCase {
         XCTAssertFalse(try FileManager.default.contentsOfDirectory(atPath: store.root.path).contains { $0.hasPrefix(".import-") })
     }
 
-    func testRecipePreservesCameraWhiteBalanceByDefault() throws {
-        let data = Data(try EditSettings().recipeJSON(defaults: ["seed": 1234, "cameraProfile": "Standard"]).utf8)
-        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
-        XCTAssertTrue(json["temperature"] is NSNull)
-        XCTAssertTrue(json["film"] is NSNull)
-        XCTAssertEqual(json["exposure"] as? Double, 0)
-        XCTAssertEqual(json["seed"] as? Int, 1234)
-        XCTAssertEqual(json["cameraProfile"] as? String, "Standard")
+    func testCanonicalRecipeRoundTripPreservesIntegerFieldsAndUntouchedValues() async throws {
+        let engine = EngineWorker()
+        for seed in [UInt32(0), UInt32.max] {
+            let input = """
+            {"seed":\(seed),"rotation":1,"denoise":0,"whiteBalanceGains":[1.2,1,0.9],
+             "film":{"film":2,"paper":3,"grain":false,"evFilm":0.5,"couplers":0.42},
+             "crop":{"x":0.1,"y":0.1,"width":0.8,"height":0.8}}
+            """
+            let canonical = try await engine.normalize(EditSettings(canonicalJSON: input))
+            var edited = canonical
+            edited.exposure = 1.5
+            edited["contrast"] = 12
+            let normalized = try await engine.normalize(edited)
+            XCTAssertEqual(normalized.fields["seed"], .integer(Int64(seed)))
+            XCTAssertEqual(normalized.fields["rotation"], .integer(1))
+            XCTAssertEqual(normalized.fields["denoise"], .integer(0))
+            for field in ["film", "whiteBalanceGains", "crop", "curves", "hsl", "wheels", "seed"] {
+                XCTAssertEqual(normalized.fields[field], canonical.fields[field], field)
+            }
+            let encoded = try JSONEncoder().encode(normalized)
+            let restored = try JSONDecoder().decode(EditSettings.self, from: encoded)
+            XCTAssertEqual(restored.canonicalJSON, normalized.canonicalJSON)
+            let parsedAgain = try await engine.normalize(restored)
+            XCTAssertEqual(parsedAgain.canonicalJSON, restored.canonicalJSON)
+        }
     }
 
-    func testEditsPersistAndUnknownVersionsAreNeverOverwritten() throws {
+    func testSchemaOneMigrationUsesCameraDefaultsAndRunsOnlyOnce() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -140,19 +157,103 @@ final class AppTests: XCTestCase {
         try Data([1]).write(to: source)
         let store = AssetStore(root: root.appendingPathComponent("Assets"))
         let asset = try store.importFile(source)
-        let settings = EditSettings(exposure: 1.5, temperature: 5500, tint: 10)
-        try store.saveEdits(settings, for: asset)
-        XCTAssertEqual(try store.loadEdits(for: asset), settings)
         let path = store.root.appendingPathComponent(asset.id.uuidString).appendingPathComponent("native-edits.json")
-        let newer = Data("{\"version\":99}".utf8)
+        let legacyJSON = """
+        {"version":1,"assetID":"\(asset.id)","settings":{"exposure":1.5,"temperature":5500,"tint":10}}
+        """
+        try Data(legacyJSON.utf8).write(to: path)
+        let loaded = try store.loadEdits(for: asset)
+        guard case .legacy(let legacy) = loaded.content else { return XCTFail("Expected schema one.") }
+        let engine = EngineWorker()
+        let camera = try await engine.normalize(EditSettings(canonicalJSON: """
+        {"cameraProfile":"Standard","seed":1234,"sharpen":50,"film":null,
+         "crop":{"x":0.1,"y":0.1,"width":0.8,"height":0.8}}
+        """))
+        let migrated = try await engine.normalize(legacy.applying(to: camera))
+        XCTAssertEqual(migrated.fields["cameraProfile"], camera.fields["cameraProfile"])
+        XCTAssertEqual(migrated.fields["crop"], camera.fields["crop"])
+        XCTAssertEqual(migrated.fields["seed"], .integer(1234))
+        XCTAssertEqual(migrated["sharpen"], 50)
+        XCTAssertEqual(migrated.exposure, 1.5)
+        XCTAssertEqual(migrated.temperature, 5500)
+        XCTAssertNil(migrated.film)
+        let document = RecipeDocument(sourceRevision: String(repeating: "a", count: 64), recipe: migrated)
+        let saved = NativeEdits(assetID: asset.id, renderVersion: 20, document: document)
+        _ = try store.saveEdits(saved, for: asset, replacing: loaded.data)
+        guard case .current(let restored) = try store.loadEdits(for: asset).content else { return XCTFail("Migration must not run again.") }
+        XCTAssertEqual(restored.document.recipe.canonicalJSON, migrated.canonicalJSON)
+        XCTAssertEqual(restored.assetID, asset.id)
+        XCTAssertEqual(try Data(contentsOf: asset.sourceURL(in: store.root)), Data([1]))
+    }
+
+    func testConfirmedOlderSidecarAdvancesBothHistories() async throws {
+        let engine = EngineWorker()
+        let localRecipe = try await engine.normalize(EditSettings(canonicalJSON: "{\"film\":null,\"seed\":10}"))
+        let importedRecipe = try await engine.normalize(EditSettings(canonicalJSON: "{\"film\":{\"film\":3},\"seed\":99,\"exposure\":2}"))
+        let local = RecipeDocument(sourceRevision: "same", revision: 25, updatedMs: 4_000_000_000_000, recipe: localRecipe)
+        let imported = RecipeDocument(sourceRevision: "same", revision: 2, updatedMs: 3_000_000_000_000, recipe: importedRecipe)
+        let replacement = try local.replacing(with: imported)
+        XCTAssertEqual(replacement.revision, 26)
+        XCTAssertEqual(replacement.updatedMs, 4_000_000_000_001)
+        XCTAssertEqual(replacement.recipe.canonicalJSON, importedRecipe.canonicalJSON)
+        var wrongSource = imported
+        wrongSource.sourceRevision = "different"
+        XCTAssertThrowsError(try local.replacing(with: wrongSource))
+    }
+
+    func testFilmStockChangeKeepsOtherFilmParameters() async throws {
+        let engine = EngineWorker()
+        let original = try await engine.normalize(EditSettings(canonicalJSON: "{\"film\":{\"film\":2,\"evFilm\":1.2,\"grain\":false,\"couplers\":0.42}}"))
+        var edited = original
+        var film = try XCTUnwrap(edited.film)
+        film["film"] = .integer(4)
+        edited.film = film
+        let result = try await engine.normalize(edited)
+        var expected = try XCTUnwrap(original.film)
+        expected["film"] = .integer(4)
+        XCTAssertEqual(result.film, expected)
+    }
+
+    func testEditsPersistAndExternalChangesAreNeverOverwritten() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("photo.x3f")
+        try Data([1]).write(to: source)
+        let store = AssetStore(root: root.appendingPathComponent("Assets"))
+        let asset = try store.importFile(source)
+        let saved = try snapshot(asset: asset, exposure: 1.5)
+        let initial = try store.saveEdits(saved, for: asset, replacing: nil)
+        guard case .current(let restored) = try store.loadEdits(for: asset).content else { return XCTFail("Missing full recipe.") }
+        XCTAssertEqual(restored, saved)
+        let path = store.root.appendingPathComponent(asset.id.uuidString).appendingPathComponent("native-edits.json")
+        let newer = Data("{\"version\":99,\"assetID\":\"\(asset.id)\"}".utf8)
         try newer.write(to: path)
-        XCTAssertThrowsError(try store.saveEdits(EditSettings(), for: asset))
+        XCTAssertThrowsError(try store.saveEdits(saved, for: asset, replacing: initial))
         XCTAssertEqual(try Data(contentsOf: path), newer)
         let invalid = Data("not valid JSON".utf8)
         try invalid.write(to: path)
-        XCTAssertThrowsError(try store.saveEdits(EditSettings(), for: asset))
+        XCTAssertThrowsError(try store.saveEdits(saved, for: asset, replacing: initial))
         XCTAssertEqual(try Data(contentsOf: path), invalid)
+        try initial.write(to: path)
+        let external = try snapshot(asset: asset, exposure: 3)
+        let changed = try store.saveEdits(external, for: asset, replacing: initial)
+        XCTAssertThrowsError(try store.saveEdits(saved, for: asset, replacing: initial))
+        XCTAssertEqual(try Data(contentsOf: path), changed)
     }
+
+    func testRecipeReadRejectsOversizedFiles() throws {
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: file) }
+        try Data(repeating: 32, count: 1_048_577).write(to: file)
+        XCTAssertThrowsError(try AssetStore.readBounded(file))
+    }
+
+    private func snapshot(asset: ImportedAsset, exposure: Double) throws -> NativeEdits {
+        let recipe = try EditSettings(canonicalJSON: "{\"exposure\":\(exposure),\"film\":null,\"seed\":1234}")
+        return NativeEdits(assetID: asset.id, renderVersion: 20, document: RecipeDocument(sourceRevision: "test", recipe: recipe))
+    }
+
 }
 
 private final class HeldEngine: ImageEngine, @unchecked Sendable {
@@ -162,6 +263,19 @@ private final class HeldEngine: ImageEngine, @unchecked Sendable {
     private var completion: CheckedContinuation<PreviewResult, Error>?
     var renderedSettings: [EditSettings] { lock.withLock { settings } }
     var cancelCount: Int { lock.withLock { cancellations } }
+
+    func prepare(asset: ImportedAsset) async throws -> ImageInfo {
+        let defaults = try await normalize(EditSettings(canonicalJSON: "{\"film\":null,\"seed\":1234}"))
+        return ImageInfo(sourceRevision: "test", renderVersion: 1, defaultRecipe: defaults, asShotTemperature: 6500,
+                         catalog: FilmCatalog(films: [], defaultFilm: [:]), prepareMilliseconds: 1)
+    }
+    func normalize(_ settings: EditSettings) async throws -> EditSettings { try await EngineWorker().normalize(settings) }
+    func validateDocument(asset: ImportedAsset, json: String, previous: RecipeDocument?) async throws -> RecipeDocument {
+        let values = try JSONSerialization.jsonObject(with: Data(json.utf8)) as! [String: Any]
+        let recipe = String(decoding: try JSONSerialization.data(withJSONObject: values["recipe"]!), as: UTF8.self)
+        return RecipeDocument(sourceRevision: "test", recipe: try await normalize(EditSettings(canonicalJSON: recipe)))
+    }
+    func exportSidecar(asset: ImportedAsset, document: RecipeDocument) async throws -> URL { throw CancellationError() }
 
     func render(asset: ImportedAsset, settings: EditSettings) async throws -> PreviewResult {
         try await withCheckedThrowingContinuation { continuation in
@@ -179,10 +293,10 @@ private final class HeldEngine: ImageEngine, @unchecked Sendable {
         }
         continuation?.resume(returning: PreviewResult(frame: PixelFrame(width: 1, height: 1, bytesPerRow: 4, pixels: Data([0, 0, 0, 255])),
                                                      prepareMilliseconds: 1, renderMilliseconds: 1, asShotTemperature: 6500,
-                                                     sourceRevision: "test", renderVersion: 1))
+                                                     sourceRevision: "test", renderVersion: 1, recipe: renderedSettings.last ?? EditSettings()))
     }
 
-    func export(asset: ImportedAsset, settings: EditSettings) async throws -> ExportResult { throw CancellationError() }
+    func export(asset: ImportedAsset, settings: EditSettings, format: ExportFormat) async throws -> ExportResult { throw CancellationError() }
     func cancel() { lock.withLock { cancellations += 1 } }
     func setActive(_ active: Bool) { if !active { cancel() } }
     func releaseSession() { cancel() }

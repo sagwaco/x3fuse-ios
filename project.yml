@@ -20,6 +20,9 @@ targets:
         buildPhase: resources
       - path: Vendor/x3f-render/licenses
         buildPhase: resources
+      - path: Engine/resources/opcodes
+        type: folder
+        buildPhase: resources
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.sagwa.X3Fuse.native

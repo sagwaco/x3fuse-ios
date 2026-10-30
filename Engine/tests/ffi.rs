@@ -208,17 +208,16 @@ fn real_fixture_matches_desktop_path() {
         assert_eq!(default["cameraProfile"], info["asShotProfile"]);
         assert!(default["film"].is_null());
         assert!(default["temperature"].is_null());
+        let default_json = default.to_string();
+        let p = |patch: &str| patched(&default_json, patch);
 
-        let mut base = render(
-            session,
-            r#"{"version":1,"exposure":0,"temperature":null,"tint":0,"film":null}"#,
-        );
+        let mut base = render(session, &default_json);
         assert_eq!(base.stride, base.width * 4);
         assert_eq!(base.len, (base.stride * base.height) as usize);
         assert_eq!(base.width.max(base.height), 512);
 
         // Desktop path with the same recipe.
-        let recipe = session_recipe(&path, "{}");
+        let recipe: x3f_render::EditRecipe = serde_json::from_str(&default_json).unwrap();
         let profiles = x3f_render::read_camera_profiles(&path, &AtomicBool::new(false)).unwrap();
         let scene = x3f_core::prepare_scene_linear(
             &path,
@@ -256,12 +255,12 @@ fn real_fixture_matches_desktop_path() {
         // Renderer::render has no camera calibration, so a color profile
         // must render differently through the engine.
         assert!(!info["cameraProfiles"].as_array().unwrap().is_empty());
-        let standard = r#"{"cameraProfile":"Standard","monochrome":null}"#;
+        let standard = &p(r#"{"cameraProfile":"Standard","monochrome":null}"#);
         let renderer = x3f_render::Renderer::new().unwrap();
         let uncalibrated = renderer
             .render(
                 prepared.image(),
-                &session_recipe(&path, standard),
+                &serde_json::from_str(standard).unwrap(),
                 x3f_render::RenderOptions {
                     max_dimension: Some(512),
                     rgba8: true,
@@ -278,7 +277,7 @@ fn real_fixture_matches_desktop_path() {
         drop(prepared);
 
         let brighter = {
-            let mut f = render(session, r#"{"exposure":1}"#);
+            let mut f = render(session, &p(r#"{"exposure":1}"#));
             let m = mean(&f);
             x3f_frame_free(&mut f);
             m
@@ -286,7 +285,7 @@ fn real_fixture_matches_desktop_path() {
         let warmer = {
             let mut f = render(
                 session,
-                r#"{"cameraProfile":"Standard","monochrome":null,"temperature":9000}"#,
+                &p(r#"{"cameraProfile":"Standard","monochrome":null,"temperature":9000}"#),
             );
             let bytes = std::slice::from_raw_parts(f.bytes, f.len);
             let (r, b) = bytes
@@ -301,7 +300,7 @@ fn real_fixture_matches_desktop_path() {
         };
         let base_mean = mean(&base);
         let base_rb = {
-            let mut f = render(session, r#"{"cameraProfile":"Standard","monochrome":null}"#);
+            let mut f = render(session, standard);
             let bytes = std::slice::from_raw_parts(f.bytes, f.len).to_vec();
             x3f_frame_free(&mut f);
             let (r, b) = bytes
@@ -319,6 +318,7 @@ fn real_fixture_matches_desktop_path() {
             "exposure +1: {brighter} <= {base_mean}"
         );
         assert!(warmer > base_rb, "9000 K: r/b {warmer} <= {base_rb}");
+        let base_frame_bytes = std::slice::from_raw_parts(base.bytes, base.len).to_vec();
         x3f_frame_free(&mut base);
         assert!(base.bytes.is_null() && base.owner.is_null());
 
@@ -342,7 +342,8 @@ fn real_fixture_matches_desktop_path() {
         std::fs::create_dir_all(&dir).unwrap();
         let out = dir.join("out.jpg");
         let c_out = CString::new(out.to_str().unwrap()).unwrap();
-        let recipe = CString::new(r#"{"exposure":0.5}"#).unwrap();
+        let edited_json = p(r#"{"exposure":0.5}"#);
+        let recipe = CString::new(edited_json.as_str()).unwrap();
         let cancel = x3f_cancel_new();
         x3f_cancel_set(cancel);
         let mut error = ptr::null_mut();
@@ -434,6 +435,17 @@ fn real_fixture_matches_desktop_path() {
             take_error(error);
         }
         assert_eq!(sha256_hex(&path), info["sourceRevision"].as_str().unwrap());
+
+        stage2(
+            session,
+            &path,
+            &info,
+            &default_json,
+            &edited_json,
+            &base_frame_bytes,
+            &dir,
+        );
+        assert_eq!(sha256_hex(&path), info["sourceRevision"].as_str().unwrap());
         std::fs::remove_dir_all(dir).unwrap();
 
         x3f_session_free(session);
@@ -461,9 +473,641 @@ fn sha256_hex(path: &std::path::Path) -> String {
     format!("{:x}", sha2::Sha256::digest(std::fs::read(path).unwrap()))
 }
 
-fn session_recipe(path: &std::path::Path, json: &str) -> x3f_render::EditRecipe {
-    x3fuse_engine::Session::open(path, &AtomicBool::new(false))
+/// Takes an owned engine string, or panics with the error.
+fn owned(status: i32, out: *mut c_char, error: *mut c_char) -> String {
+    assert_eq!(
+        status,
+        X3F_OK,
+        "{}",
+        if error.is_null() {
+            String::new()
+        } else {
+            take_error(error)
+        }
+    );
+    let text = unsafe { CStr::from_ptr(out) }.to_str().unwrap().to_owned();
+    unsafe { x3f_string_free(out) };
+    text
+}
+
+fn cs(text: &str) -> CString {
+    CString::new(text).unwrap()
+}
+
+fn patched(recipe: &str, patch: &str) -> String {
+    let (mut out, mut error) = (ptr::null_mut(), ptr::null_mut());
+    let status = unsafe {
+        x3f_recipe_patch(
+            cs(recipe).as_ptr(),
+            cs(patch).as_ptr(),
+            &mut out,
+            &mut error,
+        )
+    };
+    owned(status, out, error)
+}
+
+/// The status of a call that must fail, after freeing its error.
+fn failed(status: i32, error: *mut c_char) -> i32 {
+    assert_ne!(status, X3F_OK);
+    take_error(error);
+    status
+}
+
+/// True when the TIFF/DNG has an OpcodeList3 (tag 51022) entry, little endian.
+fn has_opcode_list3(bytes: &[u8]) -> bool {
+    bytes.windows(4).any(|w| w == [0x4E, 0xC7, 0x07, 0x00])
+}
+
+/// Desktop documents, recipes, TIFF and DNG on a real file.
+unsafe fn stage2(
+    session: *mut X3fSession,
+    path: &std::path::Path,
+    info: &serde_json::Value,
+    default_json: &str,
+    edited_json: &str,
+    base_frame: &[u8],
+    dir: &std::path::Path,
+) {
+    let source = info["sourceRevision"].as_str().unwrap();
+    let (mut out, mut error) = (ptr::null_mut(), ptr::null_mut());
+
+    // Sparse recipes take the desktop defaults, not the camera defaults.
+    let sparse = owned(
+        x3f_recipe_normalize(
+            ptr::null(),
+            cs(r#"{"exposure":1}"#).as_ptr(),
+            &mut out,
+            &mut error,
+        ),
+        out,
+        error,
+    );
+    let sparse: serde_json::Value = serde_json::from_str(&sparse).unwrap();
+    assert!(sparse["film"].is_object() && sparse["cameraProfile"].is_null());
+    assert_eq!(
+        (sparse["sharpen"].as_f64(), sparse["seed"].as_u64()),
+        (Some(0.), Some(0))
+    );
+    let merge = serde_json::json!({ "x3iSource": x3f_core::X3iSource::Merge }).to_string();
+    let merge = patched(default_json, &merge);
+    assert_eq!(
+        failed(
+            x3f_recipe_normalize(session, cs(&merge).as_ptr(), &mut out, &mut error),
+            error
+        ),
+        X3F_ERR_UNSUPPORTED
+    );
+    assert!(out.is_null());
+
+    let mut edited = true;
+    assert_eq!(
+        x3f_recipe_edited(
+            session,
+            cs(default_json).as_ptr(),
+            &mut edited,
+            ptr::null_mut()
+        ),
+        X3F_OK
+    );
+    assert!(!edited);
+    assert_eq!(
+        x3f_recipe_edited(
+            session,
+            cs(edited_json).as_ptr(),
+            &mut edited,
+            ptr::null_mut()
+        ),
+        X3F_OK
+    );
+    assert!(edited);
+
+    // Film look from the catalog renders differently from the camera look.
+    let catalog: serde_json::Value =
+        serde_json::from_str(&owned(x3f_film_catalog(&mut out, &mut error), out, error)).unwrap();
+    let stock = catalog["films"][0]["key"].as_str().unwrap();
+    let film = owned(
+        x3f_recipe_apply_look(
+            cs(default_json).as_ptr(),
+            cs(stock).as_ptr(),
+            &mut out,
+            &mut error,
+        ),
+        out,
+        error,
+    );
+    let start = std::time::Instant::now();
+    let mut frame = render(session, &film);
+    eprintln!("film preview 512 px: {:?}", start.elapsed());
+    assert!(std::slice::from_raw_parts(frame.bytes, frame.len) != base_frame);
+    x3f_frame_free(&mut frame);
+
+    // Sidecar write and read back.
+    let sidecar = dir.join("photo.X3F.x3fuse.json");
+    let c_sidecar = cs(sidecar.to_str().unwrap());
+    let written = owned(
+        x3f_sidecar_write(
+            session,
+            c_sidecar.as_ptr(),
+            cs(edited_json).as_ptr(),
+            1,
+            ptr::null(),
+            &mut out,
+            &mut error,
+        ),
+        out,
+        error,
+    );
+    let on_disk = std::fs::read_to_string(&sidecar).unwrap();
+    assert_eq!(written, on_disk);
+    let doc: serde_json::Value = serde_json::from_str(&on_disk).unwrap();
+    let keys: Vec<_> = doc.as_object().unwrap().keys().cloned().collect();
+    assert_eq!(keys.len(), 5, "{keys:?}");
+    assert_eq!(
+        (doc["version"].as_u64(), doc["revision"].as_u64()),
+        (Some(2), Some(1))
+    );
+    assert_eq!(doc["sourceRevision"], source);
+    let (mut recipe_out, mut edited) = (ptr::null_mut(), false);
+    let read = owned(
+        x3f_sidecar_read(
+            session,
+            c_sidecar.as_ptr(),
+            &mut out,
+            &mut recipe_out,
+            &mut edited,
+            &mut error,
+        ),
+        out,
+        error,
+    );
+    assert_eq!(read, on_disk);
+    assert!(edited);
+    assert_eq!(
+        owned(X3F_OK, recipe_out, ptr::null_mut()),
+        patched(edited_json, "{}")
+    );
+
+    // Desktop save rules.
+    let other = patched(edited_json, r#"{"exposure":0.25}"#);
+    assert_eq!(
+        failed(
+            x3f_sidecar_write(
+                session,
+                c_sidecar.as_ptr(),
+                cs(&other).as_ptr(),
+                1,
+                ptr::null(),
+                &mut out,
+                &mut error
+            ),
+            error
+        ),
+        X3F_ERR_CONFLICT
+    );
+    assert_eq!(
+        failed(
+            x3f_sidecar_write(
+                session,
+                c_sidecar.as_ptr(),
+                cs(&other).as_ptr(),
+                0,
+                ptr::null(),
+                &mut out,
+                &mut error
+            ),
+            error
+        ),
+        X3F_ERR_INVALID
+    );
+    assert_eq!(
+        std::fs::read_to_string(&sidecar).unwrap(),
+        on_disk,
+        "a refused save keeps the file"
+    );
+    let newer = on_disk.replace("\"revision\": 1", "\"revision\": 5");
+    assert_eq!(
+        failed(
+            x3f_sidecar_write(
+                session,
+                c_sidecar.as_ptr(),
+                cs(&other).as_ptr(),
+                2,
+                cs(&newer).as_ptr(),
+                &mut out,
+                &mut error
+            ),
+            error
+        ),
+        X3F_ERR_CONFLICT
+    );
+    let second = owned(
+        x3f_sidecar_write(
+            session,
+            c_sidecar.as_ptr(),
+            cs(&other).as_ptr(),
+            2,
+            ptr::null(),
+            &mut out,
+            &mut error,
+        ),
+        out,
+        error,
+    );
+    let second: serde_json::Value = serde_json::from_str(&second).unwrap();
+    assert!(second["updatedMs"].as_u64() > doc["updatedMs"].as_u64());
+    assert_eq!(
+        x3f_document_check_previous(cs(&on_disk).as_ptr(), cs(&newer).as_ptr(), ptr::null_mut()),
+        X3F_OK
+    );
+    assert_eq!(
+        failed(
+            x3f_document_check_previous(cs(&newer).as_ptr(), cs(&on_disk).as_ptr(), &mut error),
+            error
+        ),
+        X3F_ERR_CONFLICT
+    );
+
+    // Invalid, newer, unknown key and other source documents.
+    let bad = |text: &str| {
+        let (mut out, mut error) = (ptr::null_mut(), ptr::null_mut());
+        let status = failed(
+            x3f_document_validate(
+                session,
+                cs(text).as_ptr(),
+                &mut out,
+                ptr::null_mut(),
+                ptr::null_mut(),
+                &mut error,
+            ),
+            error,
+        );
+        assert!(out.is_null());
+        status
+    };
+    assert_eq!(bad("not json"), X3F_ERR_INVALID);
+    assert_eq!(
+        bad(&on_disk.replace("\"version\": 2", "\"version\": 3")),
+        X3F_ERR_UNSUPPORTED
+    );
+    assert_eq!(
+        bad(&on_disk.replacen("\"revision\"", "\"extra\": 1,\n  \"revision\"", 1)),
+        X3F_ERR_INVALID
+    );
+    assert_eq!(
+        bad(&on_disk.replace(source, &"0".repeat(64))),
+        X3F_ERR_CONFLICT
+    );
+    // A version 1 document with the old default film look is unedited.
+    let legacy = serde_json::json!({
+        "version": 1, "sourceRevision": source, "revision": 1, "updatedMs": 1,
+        "recipe": x3f_render::EditRecipe {
+            film: Some(x3f_render::FilmSettings { grain_params: None, halation_params: None, ..Default::default() }),
+            crop: serde_json::from_value(info["defaultRecipe"]["crop"].clone()).unwrap(),
+            seed: info["defaultRecipe"]["seed"].as_u64().unwrap() as u32,
+            ..Default::default()
+        }
+    }).to_string();
+    let (mut recipe_out, mut edited) = (ptr::null_mut(), true);
+    owned(
+        x3f_document_validate(
+            session,
+            cs(&legacy).as_ptr(),
+            &mut out,
+            &mut recipe_out,
+            &mut edited,
+            &mut error,
+        ),
+        out,
+        error,
+    );
+    assert!(!edited);
+    assert_eq!(
+        owned(X3F_OK, recipe_out, ptr::null_mut()),
+        patched(default_json, "{}")
+    );
+
+    // An unreadable existing file is kept.
+    let garbage = dir.join("garbage.x3fuse.json");
+    std::fs::write(&garbage, "garbage").unwrap();
+    let c_garbage = cs(garbage.to_str().unwrap());
+    assert_eq!(
+        failed(
+            x3f_sidecar_write(
+                session,
+                c_garbage.as_ptr(),
+                cs(edited_json).as_ptr(),
+                9,
+                ptr::null(),
+                &mut out,
+                &mut error
+            ),
+            error
+        ),
+        X3F_ERR_CONFLICT
+    );
+    assert_eq!(std::fs::read_to_string(&garbage).unwrap(), "garbage");
+    assert_eq!(
+        failed(
+            x3f_sidecar_read(
+                session,
+                c_garbage.as_ptr(),
+                &mut out,
+                ptr::null_mut(),
+                ptr::null_mut(),
+                &mut error
+            ),
+            error
+        ),
+        X3F_ERR_INVALID
+    );
+    std::fs::remove_file(&garbage).unwrap();
+    let missing = cs(dir.join("none.x3fuse.json").to_str().unwrap());
+    assert_eq!(
+        x3f_sidecar_read(
+            session,
+            missing.as_ptr(),
+            &mut out,
+            ptr::null_mut(),
+            ptr::null_mut(),
+            ptr::null_mut()
+        ),
+        X3F_OK
+    );
+    assert!(out.is_null());
+    // Never the source, and a read-only folder fails cleanly.
+    assert_eq!(
+        failed(
+            x3f_sidecar_write(
+                session,
+                cs(path.to_str().unwrap()).as_ptr(),
+                cs(edited_json).as_ptr(),
+                9,
+                ptr::null(),
+                &mut out,
+                &mut error
+            ),
+            error
+        ),
+        X3F_ERR_INVALID
+    );
+    let locked = dir.join("locked");
+    std::fs::create_dir(&locked).unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o555)).unwrap();
+    let c_locked = cs(locked.join("photo.X3F.x3fuse.json").to_str().unwrap());
+    assert_eq!(
+        failed(
+            x3f_sidecar_write(
+                session,
+                c_locked.as_ptr(),
+                cs(edited_json).as_ptr(),
+                1,
+                ptr::null(),
+                &mut out,
+                &mut error
+            ),
+            error
+        ),
+        X3F_ERR_IO
+    );
+    assert_eq!(std::fs::read_dir(&locked).unwrap().count(), 0);
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    // 16-bit TIFF.
+    let tif = dir.join("photo.tif");
+    let c_tif = cs(tif.to_str().unwrap());
+    let start = std::time::Instant::now();
+    assert_eq!(
+        x3f_session_export_tiff(
+            session,
+            cs(edited_json).as_ptr(),
+            c_tif.as_ptr(),
+            1,
+            false,
+            false,
+            ptr::null(),
+            &mut error
+        ),
+        X3F_OK,
+        "{}",
+        if error.is_null() {
+            String::new()
+        } else {
+            take_error(error)
+        }
+    );
+    eprintln!("TIFF export: {:?}", start.elapsed());
+    let tiff = std::fs::read(&tif).unwrap();
+    assert!(tiff.starts_with(b"II*\0") || tiff.starts_with(b"MM\0*"));
+    let pixels = info["width"].as_u64().unwrap() * info["height"].as_u64().unwrap();
+    assert!(
+        tiff.len() as u64 > pixels,
+        "16-bit TIFF is too small: {}",
+        tiff.len()
+    );
+    assert_eq!(
+        failed(
+            x3f_session_export_tiff(
+                session,
+                cs(edited_json).as_ptr(),
+                c_tif.as_ptr(),
+                0,
+                false,
+                false,
+                ptr::null(),
+                &mut error
+            ),
+            error
+        ),
+        X3F_ERR_EXISTS
+    );
+    assert_eq!(
+        failed(
+            x3f_session_export_tiff(
+                session,
+                cs(edited_json).as_ptr(),
+                c_tif.as_ptr(),
+                9,
+                false,
+                true,
+                ptr::null(),
+                &mut error
+            ),
+            error
+        ),
+        X3F_ERR_INVALID
+    );
+    drop(tiff);
+
+    // Original DNG, with lens correction from the bundled opcodes.
+    let opcodes = cs(concat!(env!("CARGO_MANIFEST_DIR"), "/resources/opcodes"));
+    let dng = dir.join("photo.dng");
+    let c_dng = cs(dng.to_str().unwrap());
+    assert_eq!(
+        failed(
+            x3f_session_export_dng(
+                session,
+                c_dng.as_ptr(),
+                ptr::null(),
+                false,
+                false,
+                ptr::null(),
+                ptr::null_mut(),
+                &mut error
+            ),
+            error
+        ),
+        X3F_ERR_INVALID
+    );
+    let cancel = x3f_cancel_new();
+    x3f_cancel_set(cancel);
+    assert_eq!(
+        failed(
+            x3f_session_export_dng(
+                session,
+                c_dng.as_ptr(),
+                opcodes.as_ptr(),
+                false,
+                false,
+                cancel,
+                ptr::null_mut(),
+                &mut error
+            ),
+            error
+        ),
+        X3F_ERR_CANCELLED
+    );
+    x3f_cancel_free(cancel);
+    assert!(!dng.exists());
+    let mut warnings = ptr::null_mut();
+    let start = std::time::Instant::now();
+    assert_eq!(
+        x3f_session_export_dng(
+            session,
+            c_dng.as_ptr(),
+            opcodes.as_ptr(),
+            false,
+            false,
+            ptr::null(),
+            &mut warnings,
+            &mut error
+        ),
+        X3F_OK,
+        "{}",
+        if error.is_null() {
+            String::new()
+        } else {
+            take_error(error)
+        }
+    );
+    eprintln!("DNG export: {:?}", start.elapsed());
+    let warnings = owned(X3F_OK, warnings, ptr::null_mut());
+    eprintln!("DNG warnings: {warnings}");
+    let bytes = std::fs::read(&dng).unwrap();
+    assert!(bytes.starts_with(b"II*\0"));
+    let merrill = info["cameraProfiles"]
+        .as_array()
         .unwrap()
-        .recipe(json)
+        .iter()
+        .all(|p| p["id"] != "FCYellow");
+    assert_eq!(
+        has_opcode_list3(&bytes),
+        merrill,
+        "Merrill DNGs carry lens correction, Quattro have none"
+    );
+    let recovered = dir.join("recovered.dng");
+    assert_eq!(
+        x3f_session_export_dng(
+            session,
+            cs(recovered.to_str().unwrap()).as_ptr(),
+            ptr::null(),
+            true,
+            false,
+            ptr::null(),
+            ptr::null_mut(),
+            ptr::null_mut()
+        ),
+        X3F_OK
+    );
+    assert!(!has_opcode_list3(&std::fs::read(&recovered).unwrap()));
+    let leftovers: Vec<_> = std::fs::read_dir(dir)
         .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_name().to_string_lossy().ends_with(".partial"))
+        .collect();
+    assert!(leftovers.is_empty());
+}
+
+/// The real desktop sidecar in X3F_SIDECAR_FIXTURE (next to its RAW). It is
+/// only read.
+#[test]
+fn desktop_sidecar_fixture() {
+    let Some(sidecar) = std::env::var_os("X3F_SIDECAR_FIXTURE").map(PathBuf::from) else {
+        eprintln!("skipped: X3F_SIDECAR_FIXTURE unset");
+        return;
+    };
+    eprintln!("sidecar fixture: {}", sidecar.display());
+    let raw = PathBuf::from(
+        sidecar
+            .to_str()
+            .unwrap()
+            .strip_suffix(".x3fuse.json")
+            .unwrap(),
+    );
+    let before = (std::fs::read(&sidecar).unwrap(), sha256_hex(&raw));
+    let document: serde_json::Value = serde_json::from_slice(&before.0).unwrap();
+    unsafe {
+        let mut session = ptr::null_mut();
+        let mut error = ptr::null_mut();
+        assert_eq!(
+            x3f_session_open(
+                cs(raw.to_str().unwrap()).as_ptr(),
+                ptr::null(),
+                &mut session,
+                &mut error
+            ),
+            X3F_OK
+        );
+        let (mut out, mut recipe_out, mut edited) = (ptr::null_mut(), ptr::null_mut(), false);
+        let read = owned(
+            x3f_sidecar_read(
+                session,
+                cs(sidecar.to_str().unwrap()).as_ptr(),
+                &mut out,
+                &mut recipe_out,
+                &mut edited,
+                &mut error,
+            ),
+            out,
+            error,
+        );
+        let recipe = owned(X3F_OK, recipe_out, ptr::null_mut());
+        let read: serde_json::Value = serde_json::from_str(&read).unwrap();
+        assert_eq!(read["version"], 2);
+        assert_eq!(read["sourceRevision"], document["sourceRevision"]);
+        assert_eq!(read["revision"], document["revision"]);
+        assert_eq!(read["updatedMs"], document["updatedMs"]);
+        eprintln!(
+            "desktop document version {} edited {edited}",
+            document["version"]
+        );
+        if edited {
+            // An edited recipe is kept exactly as parsed.
+            let parsed: x3f_render::EditRecipe =
+                serde_json::from_value(document["recipe"].clone()).unwrap();
+            assert_eq!(
+                serde_json::from_str::<x3f_render::EditRecipe>(&recipe).unwrap(),
+                parsed
+            );
+        }
+        let mut frame = render(session, &recipe);
+        x3f_frame_free(&mut frame);
+        x3f_session_free(session);
+    }
+    assert_eq!(
+        (std::fs::read(&sidecar).unwrap(), sha256_hex(&raw)),
+        before,
+        "fixtures unchanged"
+    );
 }

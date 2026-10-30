@@ -15,6 +15,11 @@ final class AppModel: ObservableObject {
     @Published var exportURL: URL?
     @Published var status = "Import an X3F or X3I image to begin."
     @Published var asShotTemperature = 6500.0
+    @Published private(set) var imageInfo: ImageInfo?
+    @Published private(set) var currentEdits: NativeEdits?
+    @Published var isTransferringRecipe = false
+    private var selectionRevision: UInt64 = 0
+    private var disabledFilm: [String: JSONValue]?
 
     let library: AssetLibrary
     let worker: any ImageEngine
@@ -52,32 +57,63 @@ final class AppModel: ObservableObject {
         guard selectedID != id || frame == nil else { return }
         flushEdits()
         selectedID = id
+        selectionRevision &+= 1
+        let selection = selectionRevision
         frame = nil
         exportURL = nil
         settings = EditSettings()
+        imageInfo = nil
+        currentEdits = nil
+        disabledFilm = nil
         requests.cancel()
         worker.cancel()
         guard let asset = selectedAsset else { return }
         selectionLoading = true
         status = "Opening \(asset.name)…"
         Task {
-            let saved: EditSettings
-            do { saved = try await library.loadEdits(asset) }
-            catch {
-                saved = EditSettings()
-                if selectedID == asset.id { showSaveError(error, asset: asset) }
+            defer { if selectionRevision == selection { selectionLoading = false } }
+            do {
+                await savePendingEdits()
+                let loaded = try await library.loadEdits(asset)
+                let metadata = try await worker.prepare(asset: asset)
+                var document: RecipeDocument
+                switch loaded.content {
+                case .empty:
+                    document = RecipeDocument(sourceRevision: metadata.sourceRevision, recipe: metadata.defaultRecipe)
+                case .legacy(let legacy):
+                    document = RecipeDocument(sourceRevision: metadata.sourceRevision, recipe: legacy.applying(to: metadata.defaultRecipe))
+                case .current(let saved):
+                    document = saved.document
+                }
+                document = edits.pending[asset.id]?.1.document ?? document
+                document.recipe = try await worker.normalize(document.recipe)
+                let validated = try await worker.validateDocument(asset: asset, json: document.json, previous: nil)
+                guard selectionRevision == selection, selectedID == asset.id else { return }
+                let snapshot = NativeEdits(assetID: asset.id, renderVersion: metadata.renderVersion, document: validated)
+                try await library.acceptEdits(snapshot, asset: asset, replacing: loaded.data, persist: loaded.data != nil)
+                guard selectionRevision == selection else { return }
+                imageInfo = metadata
+                asShotTemperature = metadata.asShotTemperature
+                currentEdits = snapshot
+                settings = validated.recipe
+                selectionLoading = false
+                requestPreview()
+            } catch is CancellationError {
+                status = "Opening paused. Tap Reload to continue."
+            } catch {
+                guard selectionRevision == selection else { return }
+                status = "Could not open the saved recipe. Existing edits are unchanged."
+                message = error.localizedDescription
             }
-            guard selectedID == asset.id else { return }
-            settings = edits.pending[asset.id]?.1 ?? saved
-            selectionLoading = false
-            requestPreview()
         }
     }
 
     func changeSettings(_ update: (inout EditSettings) -> Void) {
+        guard let asset = selectedAsset, !selectionLoading, var snapshot = currentEdits else { return }
         update(&settings)
-        guard let asset = selectedAsset, !selectionLoading else { return }
-        edits.pending[asset.id] = (asset, settings)
+        snapshot.document.setRecipe(settings)
+        currentEdits = snapshot
+        edits.pending[asset.id] = (asset, snapshot)
         saveTask?.cancel()
         saveTask = Task {
             do { try await Task.sleep(for: .milliseconds(300)) }
@@ -97,7 +133,10 @@ final class AppModel: ObservableObject {
             status = "Paused while the app is inactive."
         } else {
             worker.setActive(true)
-            if !isBenchmarking { requestPreview() }
+            if !isBenchmarking {
+                if currentEdits == nil, selectedID != nil { select(selectedID) }
+                else { requestPreview() }
+            }
         }
     }
 
@@ -116,9 +155,9 @@ final class AppModel: ObservableObject {
     }
 
     func requestPreview() {
-        guard let asset = selectedAsset, !selectionLoading else { return }
+        guard let asset = selectedAsset, !selectionLoading, currentEdits != nil else { return }
         requests.submit((asset, settings))
-        guard active, !isExporting, !isBenchmarking else { return }
+        guard active, !isExporting, !isBenchmarking, !isTransferringRecipe else { return }
         guard !pumping else { return }
         pumping = true
         Task { await drainPreviews() }
@@ -127,12 +166,14 @@ final class AppModel: ObservableObject {
     private func drainPreviews() async {
         isRendering = true
         defer { pumping = false; isRendering = false }
-        while active, !isExporting, !isBenchmarking, let (revision, request) = requests.take() {
+        while active, !isExporting, !isBenchmarking, !isTransferringRecipe, let (revision, request) = requests.take() {
             status = "Rendering…"
             do {
                 let result = try await worker.render(asset: request.0, settings: request.1)
                 guard active, requests.revision == revision, selectedID == request.0.id else { continue }
                 frame = result.frame
+                settings = result.recipe
+                currentEdits?.document.recipe = result.recipe
                 asShotTemperature = result.asShotTemperature
                 status = "\(result.frame.width) × \(result.frame.height) preview · \(Int(result.renderMilliseconds)) ms render"
             } catch is CancellationError {
@@ -166,20 +207,21 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func export() {
-        guard let asset = selectedAsset, !isExporting, active else { return }
+    func export(_ format: ExportFormat = .jpeg) {
+        guard let asset = selectedAsset, currentEdits != nil, !isExporting, active else { return }
         let snapshot = settings
         flushEdits()
         requests.cancel()
         worker.cancel()
         isExporting = true
         exportURL = nil
-        status = "Exporting full-resolution JPEG…"
+        status = "Exporting \(format.title)…"
         Task {
             do {
-                let result = try await worker.export(asset: asset, settings: snapshot)
+                let result = try await worker.export(asset: asset, settings: snapshot, format: format)
                 exportURL = result.url
-                status = "Saved to Documents/Exports."
+                status = "Saved \(format.title) to Documents/Exports."
+                if !result.warnings.isEmpty { message = result.warnings.joined(separator: "\n") }
             } catch is CancellationError {
                 status = "Export cancelled."
             } catch { message = error.localizedDescription; status = "Export failed." }
@@ -188,11 +230,75 @@ final class AppModel: ObservableObject {
         }
     }
 
+    func resetEdits() {
+        guard let defaults = imageInfo?.defaultRecipe else { return }
+        disabledFilm = nil
+        changeSettings { $0 = defaults }
+    }
+
+    func setFilmEnabled(_ enabled: Bool) {
+        if enabled {
+            guard let film = disabledFilm ?? imageInfo?.catalog.defaultFilm else { return }
+            changeSettings { $0.film = film }
+        } else {
+            disabledFilm = settings.film
+            changeSettings { $0.film = nil }
+        }
+    }
+
+    func selectFilm(_ index: Int) {
+        guard var film = settings.film ?? imageInfo?.catalog.defaultFilm else { return }
+        film["film"] = .integer(Int64(index))
+        changeSettings { $0.film = film }
+    }
+
+    func importSidecar(_ url: URL) {
+        guard let asset = selectedAsset, let snapshot = currentEdits, !isTransferringRecipe else { return }
+        requests.cancel()
+        worker.cancel()
+        isTransferringRecipe = true
+        status = "Validating desktop sidecar…"
+        Task {
+            defer { isTransferringRecipe = false; if active { requestPreview() } }
+            do {
+                await savePendingEdits()
+                let json = try await library.readSidecar(url)
+                let validated = try await worker.validateDocument(asset: asset, json: json, previous: nil)
+                let document = try snapshot.document.replacing(with: validated)
+                guard selectedID == asset.id else { return }
+                let imported = NativeEdits(assetID: asset.id, renderVersion: snapshot.renderVersion, document: document)
+                try await library.saveEdits(imported, asset: asset)
+                currentEdits = imported
+                settings = document.recipe
+                disabledFilm = nil
+                edits.pending.removeValue(forKey: asset.id)
+                status = "Desktop edits imported."
+            } catch {
+                message = "The sidecar was not imported. Existing edits are unchanged. \(error.localizedDescription)"
+            }
+        }
+    }
+
+    func exportSidecar() {
+        guard let asset = selectedAsset, let snapshot = currentEdits, !isTransferringRecipe else { return }
+        requests.cancel()
+        worker.cancel()
+        isTransferringRecipe = true
+        Task {
+            defer { isTransferringRecipe = false; if active { requestPreview() } }
+            do {
+                await savePendingEdits()
+                exportURL = try await worker.exportSidecar(asset: asset, document: snapshot.document)
+                status = "Desktop sidecar saved to Documents/Exports."
+            } catch { message = error.localizedDescription }
+        }
+    }
+
     private func flushEdits() {
         saveTask?.cancel()
         guard !edits.pending.isEmpty || edits.saving else { return }
         var background = UIBackgroundTaskIdentifier.invalid
-        let endBackground: @MainActor () -> Void = {
+        let endBackground: @MainActor @Sendable () -> Void = {
             guard background != .invalid else { return }
             let identifier = background
             background = .invalid
@@ -206,8 +312,10 @@ final class AppModel: ObservableObject {
     }
 
     private func savePendingEdits() async {
-        await edits.save(using: { settings, asset in
-            try await self.library.saveEdits(settings, asset: asset)
+        await edits.save(using: { pending, asset in
+            var normalized = pending
+            normalized.document.recipe = try await self.worker.normalize(pending.document.recipe)
+            try await self.library.saveEdits(normalized, asset: asset)
         }, onError: { error, asset in self.showSaveError(error, asset: asset) })
     }
 
@@ -237,12 +345,19 @@ final class AppModel: ObservableObject {
             report["importMilliseconds"] = start.millisecondsToNow
             assets.insert(asset, at: 0)
             selectedID = asset.id
-            settings = EditSettings()
             report["memoryAfterImportBytes"] = MemorySampler.footprint()
             status = "Benchmark: preparing and rendering…"
+            let metadata = try await worker.prepare(asset: asset)
+            imageInfo = metadata
+            settings = metadata.defaultRecipe
+            asShotTemperature = metadata.asShotTemperature
+            let document = RecipeDocument(sourceRevision: metadata.sourceRevision, recipe: settings)
+            let snapshot = NativeEdits(assetID: asset.id, renderVersion: metadata.renderVersion, document: document)
+            try await library.acceptEdits(snapshot, asset: asset, replacing: nil, persist: false)
+            currentEdits = snapshot
             let result = try await worker.render(asset: asset, settings: settings)
             frame = result.frame
-            report["prepareMilliseconds"] = result.prepareMilliseconds
+            report["prepareMilliseconds"] = metadata.prepareMilliseconds
             report["renderMilliseconds"] = result.renderMilliseconds
             report["sourceRevision"] = result.sourceRevision
             report["renderVersion"] = result.renderVersion
@@ -250,12 +365,37 @@ final class AppModel: ObservableObject {
             report["previewHeight"] = result.frame.height
             report["memoryAfterRenderBytes"] = MemorySampler.footprint()
             status = "Benchmark: exporting…"
-            let exported = try await worker.export(asset: asset, settings: settings)
-            exportURL = exported.url
-            report["exportMilliseconds"] = exported.milliseconds
-            report["exportFilename"] = exported.url.lastPathComponent
-            report["availableMemoryBeforeExportBytes"] = exported.availableMemoryBefore
-            report["memoryAfterExportBytes"] = MemorySampler.footprint()
+            for format in ExportFormat.allCases {
+                let exported = try await worker.export(asset: asset, settings: settings, format: format)
+                exportURL = exported.url
+                report["\(format.rawValue)ExportMilliseconds"] = exported.milliseconds
+                report["\(format.rawValue)ExportFilename"] = exported.url.lastPathComponent
+                report["\(format.rawValue)Warnings"] = exported.warnings
+                if format == .jpeg {
+                    report["exportMilliseconds"] = exported.milliseconds
+                    report["exportFilename"] = exported.url.lastPathComponent
+                    report["availableMemoryBeforeExportBytes"] = exported.availableMemoryBefore
+                    report["memoryAfterExportBytes"] = MemorySampler.footprint()
+                }
+            }
+            let sidecarStart = ContinuousClock.now
+            let sidecar = try await worker.exportSidecar(asset: asset, document: document)
+            let sidecarJSON = try await library.readSidecar(sidecar)
+            let roundTrip = try await worker.validateDocument(asset: asset, json: sidecarJSON, previous: document)
+            report["sidecarRoundTripMilliseconds"] = sidecarStart.millisecondsToNow
+            report["sidecarFilename"] = sidecar.deletingLastPathComponent().lastPathComponent + "/" + sidecar.lastPathComponent
+            report["sidecarRoundTripMatches"] = roundTrip.recipe.canonicalJSON == settings.canonicalJSON
+            guard roundTrip.recipe.canonicalJSON == settings.canonicalJSON else {
+                throw EditStorageError("The sidecar round trip changed the canonical recipe.")
+            }
+            var filmRecipe = settings
+            filmRecipe.film = metadata.catalog.defaultFilm
+            let film = try await worker.render(asset: asset, settings: filmRecipe)
+            report["filmRenderMilliseconds"] = film.renderMilliseconds
+            report["filmStockIndex"] = film.recipe.filmStock
+            report["filmStockKey"] = metadata.catalog.films.first { $0.index == film.recipe.filmStock }?.key
+            report["filmRecipeJSON"] = film.recipe.canonicalJSON
+            report["memoryAfterFilmBytes"] = MemorySampler.footprint()
             report["status"] = "ok"
             status = "Benchmark complete. See Documents/Benchmarks/report.json."
         } catch {

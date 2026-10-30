@@ -1,0 +1,50 @@
+{
+  "availableMemoryBeforeExportBytes" : 2117974712,
+  "device" : "iPad",
+  "dngExportFilename" : "DP0Q0010-5789D8E0-4DCE-414C-ABCE-B4C68AA1C8EB.dng",
+  "dngExportMilliseconds" : 3289.5079169999999,
+  "dngWarnings" : [
+
+  ],
+  "exportFilename" : "DP0Q0010-D6102BED-C052-45D9-B2B6-ABAEAFE0B1DF.jpg",
+  "exportMilliseconds" : 398.86174999999997,
+  "filmEnabled" : false,
+  "filmRecipeJSON" : "{\"version\":1,\"cameraProfile\":\"Standard\",\"exposure\":0.0,\"temperature\":null,\"tint\":0.0,\"contrast\":0.0,\"highlights\":0.0,\"shadows\":0.0,\"whites\":0.0,\"blacks\":0.0,\"fillLight\":0.0,\"saturation\":0.0,\"vibrance\":0.0,\"curves\":{\"master\":[{\"x\":0.0,\"y\":0.0},{\"x\":1.0,\"y\":1.0}],\"red\":[{\"x\":0.0,\"y\":0.0},{\"x\":1.0,\"y\":1.0}],\"green\":[{\"x\":0.0,\"y\":0.0},{\"x\":1.0,\"y\":1.0}],\"blue\":[{\"x\":0.0,\"y\":0.0},{\"x\":1.0,\"y\":1.0}]},\"hsl\":[{\"hue\":0.0,\"saturation\":0.0,\"luminance\":0.0},{\"hue\":0.0,\"saturation\":0.0,\"luminance\":0.0},{\"hue\":0.0,\"saturation\":0.0,\"luminance\":0.0},{\"hue\":0.0,\"saturation\":0.0,\"luminance\":0.0},{\"hue\":0.0,\"saturation\":0.0,\"luminance\":0.0},{\"hue\":0.0,\"saturation\":0.0,\"luminance\":0.0},{\"hue\":0.0,\"saturation\":0.0,\"luminance\":0.0},{\"hue\":0.0,\"saturation\":0.0,\"luminance\":0.0}],\"denoise\":10,\"denoiseOptions\":{\"algorithm\":\"nlm\",\"luminance\":false,\"chroma\":true,\"strength\":1.0,\"nlm\":{\"lumaPatch\":3,\"chromaPatch\":3,\"lumaSearch\":11,\"chromaSearch\":11}},\"sharpen\":50.0,\"crop\":{\"x\":0.0,\"y\":0.17809735,\"width\":1.0,\"height\":0.64380527},\"rotation\":0,\"straighten\":0.0,\"pitch\":0.0,\"yaw\":0.0,\"monochrome\":null,\"film\":{\"film\":2,\"paper\":3,\"negative\":false,\"evFilm\":0.0,\"evPaper\":null,\"couplers\":0.25,\"couplersRadius\":0.0015,\"grain\":true,\"grainParams\":{\"rmsGranularity\":[4.5,4.5,4.5],\"blur\":0.7,\"multUsmAmount\":1.5},\"grainSize\":1.0,\"grainAmount\":1.0,\"grainRoughness\":0.0,\"grainSaturation\":1.0,\"halation\":false,\"halationParams\":{\"scatterAmount\":1.0,\"scatterSpatialScale\":1.0,\"halationAmount\":1.0,\"halationSpatialScale\":1.0,\"boostEv\":0.0,\"boostRange\":0.3,\"protectEv\":4.0},\"halationStrength\":0.35,\"halationRadius\":0.0015,\"halationMidtones\":0.0,\"scatterSizeRgb\":[9.3,9.7,9.1],\"scatterStrengthRgb\":[0.78,0.65,0.67],\"halationSizeRgb\":[65.0,65.0,65.0],\"halationStrengthRgb\":[0.015,0.005,0.0],\"gammaFilm\":1.0,\"gammaPaper\":1.0,\"tuneM\":0.0,\"tuneY\":0.0},\"effects\":null,\"seed\":1763274012}",
+  "filmRenderMilliseconds" : 330.14266700000002,
+  "filmStockIndex" : 2,
+  "filmStockKey" : "kodak_portra_400",
+  "finishedAt" : "2026-10-30T04:41:21Z",
+  "fixture" : "DP0Q0010.X3F",
+  "importMilliseconds" : 8.5238329999999998,
+  "jpegExportFilename" : "DP0Q0010-D6102BED-C052-45D9-B2B6-ABAEAFE0B1DF.jpg",
+  "jpegExportMilliseconds" : 398.86174999999997,
+  "jpegWarnings" : [
+
+  ],
+  "memoryAfterExportBytes" : 691373216,
+  "memoryAfterFilmBytes" : 792806704,
+  "memoryAfterImportBytes" : 17515368,
+  "memoryAfterRenderBytes" : 910525792,
+  "memorySampleIntervalMilliseconds" : 50,
+  "prepareMilliseconds" : 2907.750333,
+  "previewHeight" : 659,
+  "previewMaxEdge" : 1536,
+  "previewWidth" : 1536,
+  "renderMilliseconds" : 255.86541600000001,
+  "renderVersion" : 20,
+  "sampledPeakPhysicalFootprintBytes" : 1262077520,
+  "schemaVersion" : 1,
+  "sidecarFilename" : "0BD7C309-F23F-46C1-88DF-DCAA81DF793F\/DP0Q0010.X3F.x3fuse.json",
+  "sidecarRoundTripMatches" : true,
+  "sidecarRoundTripMilliseconds" : 169.76762500000001,
+  "sourceRevision" : "69196d1c86b68736b7b7b5dd1002af0fdb4706e7b01307e7a7bd41e555b10c0e",
+  "startedAt" : "2026-10-30T04:41:11Z",
+  "status" : "ok",
+  "systemVersion" : "26.5.2",
+  "tiffExportFilename" : "DP0Q0010-3B9BE69E-377D-443F-8654-954048321F73.tif",
+  "tiffExportMilliseconds" : 2386.9264579999999,
+  "tiffWarnings" : [
+
+  ],
+  "timingScope" : "Pipeline wall time; UI latency is not measured"
+}

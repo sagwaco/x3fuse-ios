@@ -58,3 +58,35 @@ After the native device runs, the user reported that exposure/WB and pinch/pan
 were "Responsive enough to continue the native migration" compared with the
 Tauri Release baseline. This is subjective device acceptance, not a tap-latency
 measurement.
+
+## Stage 2 device acceptance
+
+On 2026-10-29, the signed Release app completed the expanded benchmark on the same
+iPad mini 6. Both reports have status `ok` and exact canonical sidecar equality.
+Film preview uses Kodak Portra 400 with the full recipe recorded in each report.
+The non-film preview and exports use each source's camera defaults.
+
+| Fixture | Prepare ms | Preview ms | JPEG ms | TIFF ms | DNG ms | Film preview ms | Sampled peak MB |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Merrill DP2M0643 | 2611 | 207 | 530 | 1945 | 2696 | 445 | 1110 |
+| Quattro DP0Q0010 | 2908 | 256 | 399 | 2387 | 3290 | 330 | 1262 |
+
+These are single runs. GPU caches and prior activity differ from the initial runs,
+so the table does not establish a speedup. Peaks cover preparation, all three
+exports, sidecar exchange, and film rendering. No increased-memory entitlement is
+used. UI latency and thermal behavior have not been instrumented.
+
+The exported files were copied back from the iPad and checked with ExifTool.
+Both TIFFs contain 16-bit RGB samples, lossless Deflate compression, and the x3f sRGB
+profile. Merrill output is 4704 by 3136; Quattro output preserves the source's
+panoramic crop at 5424 by 2328. Original DNGs contain 16-bit samples and DNG 1.4
+metadata. The Merrill DNG includes its OpcodeList3 gain map; Quattro has no bundled
+lens correction and exports the full 5424 by 3616 sensor image.
+
+The user reported that the new light/color controls and film toggle were
+"Responsive enough for the next stage". Eleven Release simulator tests passed,
+including full recipe preservation, native schema-1 migration, confirmed older
+sidecar replacement, film parameter preservation, and conflicting saved edits.
+Host engine tests passed with Merrill, Quattro, and a real desktop version-1
+sidecar. This does not establish behavior for all camera bodies or X3I fixtures.
+Reports are in `docs/benchmarks/stage2-merrill.json` and `stage2-quattro.json`.
