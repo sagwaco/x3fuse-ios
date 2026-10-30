@@ -1,7 +1,90 @@
 import XCTest
+import X3FuseEngine
 @testable import X3FuseNative
 
 final class EditingTests: XCTestCase {
+    func testCameraMatchingPreservesImportedFieldsAndExistingEffects() async throws {
+        let engine = EngineWorker()
+        let original = try await engine.normalize(EditSettings(canonicalJSON: """
+        {"seed":4321,"exposure":1.2,"temperature":5200,"tint":12,"sharpen":23,
+         "whiteBalanceGains":[1.2,1,1.5],"crop":{"x":0.1,"y":0.2,"width":0.7,"height":0.6},
+         "film":{"film":2,"paper":3,"evFilm":0.7,"couplersRadius":0.002},
+         "effects":{"grain":false,"halation":false,"grainParams":{"rmsGranularity":[3,7,9],"blur":0.9}},
+         "monochrome":{"filter":"red"}}
+        """))
+        for id in ["Standard", "Vivid", "FCBlue", "Monochrome"] {
+            let applied = try await engine.applyLook(id, to: original)
+            XCTAssertNil(applied.film)
+            XCTAssertEqual(applied.fields["cameraProfile"], .string(id))
+            XCTAssertEqual(applied.fields["rawColor"] ?? .null, .null)
+            XCTAssertEqual(applied.fields["monochrome"], id == "Monochrome" ? .object(["filter": .string("red")]) : .null)
+            for key in original.fields.keys where !["film", "cameraProfile", "rawColor", "monochrome"].contains(key) {
+                XCTAssertEqual(applied.fields[key], original.fields[key], key)
+            }
+        }
+        var raw = original
+        raw.fields["monochrome"] = .null
+        raw.fields["rawColor"] = .object([
+            "gains": .array([.number(1.2), .integer(1), .number(1.5)]),
+            "matrix": .array([1, 0, 0, 0, 1, 0, 0, 0, 1].map { .integer(Int64($0)) })
+        ])
+        let color = try await engine.applyLook("Standard", to: raw)
+        XCTAssertEqual(color.fields["rawColor"] ?? .null, .null)
+        XCTAssertEqual(color.fields["monochrome"], .null)
+        XCTAssertEqual(color.fields["whiteBalanceGains"], original.fields["whiteBalanceGains"])
+    }
+
+    func testCameraMatchingInitializesEffectsAndUsesPendingEdits() async throws {
+        let engine = EngineWorker()
+        var recipe = try await engine.normalize(EditSettings(canonicalJSON: "{\"film\":null,\"seed\":1234}"))
+        recipe.exposure = 0.75
+        let mono = try await engine.applyLook("Monochrome", to: recipe)
+        XCTAssertEqual(mono.exposure, 0.75)
+        XCTAssertEqual(mono.fields["seed"], .integer(1234))
+        XCTAssertEqual(mono.fields["monochrome"], .object(["filter": .string("neutral")]))
+        XCTAssertEqual(mono.fields["effects"]?.object?["grain"], .bool(true))
+        XCTAssertEqual(mono.fields["effects"]?.object?["halation"], .bool(true))
+        let color = try await engine.applyLook("Standard", to: mono)
+        XCTAssertEqual(color.fields["monochrome"], .null)
+        XCTAssertEqual(color.fields["effects"], mono.fields["effects"])
+    }
+
+    private func filmCatalogJSON() throws -> String {
+        var output: UnsafeMutablePointer<CChar>?
+        var error: UnsafeMutablePointer<CChar>?
+        defer { x3f_string_free(output); x3f_string_free(error) }
+        XCTAssertEqual(x3f_film_catalog(&output, &error), X3F_OK)
+        return String(cString: try XCTUnwrap(output))
+    }
+
+    func testFilmSelectionAfterCameraMatchingUsesStockSemantics() async throws {
+        let engine = EngineWorker()
+        let original = try await engine.normalize(EditSettings(canonicalJSON: """
+        {"seed":4321,"exposure":1.2,"film":{"film":2,"paper":3,"evFilm":0.7,
+        "grainParams":{"rmsGranularity":[5,8,11],"blur":0.9},"couplersRadius":0.002}}
+        """))
+        let info = try JSONDecoder().decode(FilmCatalog.self, from: Data(try filmCatalogJSON().utf8))
+        let stock = try XCTUnwrap(info.films.first { $0.index == original.filmStock })
+        let camera = try await engine.applyLook("Monochrome", to: original)
+        var restored = camera
+        restored.film = original.film
+        let film = try await engine.applyLook(stock.key, to: restored)
+        for key in try XCTUnwrap(original.film).keys where !["paper", "negative"].contains(key) {
+            XCTAssertEqual(film.film?[key], original.film?[key], key)
+        }
+        let catalog = try JSONDecoder().decode(JSONValue.self, from: Data(try filmCatalogJSON().utf8))
+        guard case .array(let stocks) = catalog.object?["films"] else { return XCTFail("Missing film stocks.") }
+        let entry = try XCTUnwrap(stocks.first { $0.object?["index"]?.number == Double(stock.index) }?.object)
+        XCTAssertEqual(film.film?["paper"], entry["paper"])
+        XCTAssertEqual(film.film?["negative"], entry["isPositive"])
+        XCTAssertEqual(film.fields["cameraProfile"], .null)
+        XCTAssertEqual(film.fields["rawColor"] ?? .null, .null)
+        XCTAssertEqual(film.fields["effects"], camera.fields["effects"])
+        XCTAssertEqual(film.fields["seed"], original.fields["seed"])
+        XCTAssertEqual(film.exposure, original.exposure)
+        XCTAssertEqual(film.fields["monochrome"], stock.monochrome == true ? .object(["filter": .string("neutral")]) : .null)
+    }
+
     func testFilmGrainEndpointChannelsHaveSafeBaseRanges() async throws {
         let engine = EngineWorker()
         let defaultRecipe = try await engine.normalize(EditSettings())

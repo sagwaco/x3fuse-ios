@@ -17,6 +17,7 @@ final class AppModel: ObservableObject {
     @Published var asShotTemperature = 6500.0
     @Published private(set) var imageInfo: ImageInfo?
     @Published private(set) var currentEdits: NativeEdits?
+    @Published private(set) var isApplyingLook = false
     @Published var isTransferringRecipe = false
     @Published var cropSession: CropSession?
     @Published private(set) var isCropping = false
@@ -289,8 +290,18 @@ final class AppModel: ObservableObject {
 
     func setFilmEnabled(_ enabled: Bool) {
         if enabled {
-            guard let film = disabledFilm ?? imageInfo?.catalog.defaultFilm else { return }
-            changeSettings { $0.film = film }
+            guard let film = disabledFilm ?? imageInfo?.catalog.defaultFilm,
+                  let index = film["film"]?.number.map(Int.init),
+                  let stock = imageInfo?.catalog.films.first(where: { $0.index == index }) else { return }
+            let filter = settings.fields["monochrome"]?.object?["filter"] ?? .string("neutral")
+            let filmFilters: [JSONValue] = ["neutral", "yellow", "orange", "red", "green"].map(JSONValue.string)
+            changeSettings {
+                $0.film = film
+                $0.fields["cameraProfile"] = .null
+                $0.fields["rawColor"] = .null
+                $0.fields["monochrome"] = stock.monochrome == true
+                    ? .object(["filter": filmFilters.contains(filter) ? filter : .string("neutral")]) : .null
+            }
         } else {
             disabledFilm = settings.film
             changeSettings { $0.film = nil }
@@ -298,9 +309,32 @@ final class AppModel: ObservableObject {
     }
 
     func selectFilm(_ index: Int) {
-        guard var film = settings.film ?? imageInfo?.catalog.defaultFilm else { return }
-        film["film"] = .integer(Int64(index))
-        changeSettings { $0.film = film }
+        guard let stock = imageInfo?.catalog.films.first(where: { $0.index == index }) else { return }
+        applyLook(stock.key)
+    }
+
+    func selectCameraProfile(_ id: String) {
+        guard imageInfo?.cameraProfiles.contains(where: { $0.id == id }) == true else { return }
+        applyLook(id)
+    }
+
+    private func applyLook(_ id: String) {
+        guard !isApplyingLook, !isExporting, !isTransferringRecipe, !isBenchmarking, !selectionLoading,
+              let revision = currentEdits?.document.revision else { return }
+        let selection = selectionRevision
+        let original = settings
+        isApplyingLook = true
+        Task {
+            defer { isApplyingLook = false }
+            do {
+                let applied = try await worker.applyLook(id, to: original)
+                guard selectionRevision == selection, currentEdits?.document.revision == revision else { return }
+                if let film = original.film { disabledFilm = film }
+                changeSettings { $0 = applied }
+            } catch {
+                if selectionRevision == selection { message = error.localizedDescription }
+            }
+        }
     }
 
     func importSidecar(_ url: URL) {

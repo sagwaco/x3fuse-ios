@@ -222,3 +222,35 @@ changes, Apply, and persistence after backgrounding and restart. Screenshots fro
 both layouts were inspected. The first iPhone attempt failed because a test tap
 hit the switch row rather than its toggle; targeting the toggle fixed the test
 without an app change.
+
+
+## Stage 6 camera matching and Apple RAW evaluation
+
+The Release simulator unit suite passed all 34 tests. The new checks cover the
+shared engine's camera profile and film-stock rules, preservation of other edits,
+exact restoration of disabled film settings, unavailable profiles, concurrent
+edits, and a suspended look operation after switching A to B to A. The signed
+Release device build and signature verification passed. That build was installed
+and launched on the physical iPad mini 6.
+
+Camera matching UI tests use copied Merrill DP2M0643 and Quattro DP0Q0010 files.
+They select Standard, Vivid, and Monochrome, switch to film and back, then check
+persistence after backgrounding and restarting. The saved profile is Vivid or
+FOV Classic Blue, different from the initial selection and either fixture's
+default. This also prevents repeat runs from passing on stale saved data.
+
+The first two tests passed on each simulator. Final review found that saving
+Standard could hide a failed save on the Quattro fixture, whose default is
+Standard. The tests were strengthened as described above. The final runs passed
+both tests on the iPhone 16e and iPad mini (A17 Pro) simulators, using iOS 26.0.1.
+Final screenshots from both layouts were inspected.
+
+No physical-device timing or memory benchmark was rerun for this stage. The
+production Rust renderer, C ABI, and bundled framework did not change. Earlier
+memory-pressure cancellations remain unresolved.
+
+Apple CIRAWFilter was tested on macOS with synthetic DNGs and Sigma exports.
+Default-crop baking, ignored user crops in the tested configuration, white-balance
+compatibility, and missing physical iOS evidence prevent production integration.
+DNG import remains deferred; see [Apple RAW evaluation](APPLE_RAW.md) for the
+settings, measurements, supported observations, and required follow-up.

@@ -169,12 +169,27 @@ private struct EditorView: View {
                             control("Tint", value: Binding(get: { model.settings.tint }, set: { value in model.changeSettings { $0.tint = value; $0.temperature = $0.temperature ?? model.asShotTemperature; $0.fields["whiteBalanceGains"] = .null } }),
                                     range: -2000...2000, step: 1, display: String(format: "%+.0f", model.settings.tint))
                         }
+                        if let profiles = model.imageInfo?.cameraProfiles, !profiles.isEmpty {
+                            Menu {
+                                ForEach(profiles) { profile in
+                                    Button(profile.name) { model.selectCameraProfile(profile.id) }
+                                        .accessibilityIdentifier("editor.cameraMatching.\(profile.id)")
+                                }
+                            } label: {
+                                HStack {
+                                    Text("Camera matching")
+                                    Spacer()
+                                    Text(cameraMatchingName(profiles)).foregroundStyle(.secondary)
+                                        .accessibilityIdentifier("editor.cameraMatching.current")
+                                }
+                            }.accessibilityIdentifier("editor.cameraMatching")
+                        }
                         Toggle("Film", isOn: Binding(get: { model.settings.film != nil }, set: { model.setFilmEnabled($0) }))
                             .accessibilityIdentifier("editor.filmEnabled")
                         if model.settings.film != nil, let catalog = model.imageInfo?.catalog {
                             Picker("Film stock", selection: Binding(get: { model.settings.filmStock ?? 0 }, set: { model.selectFilm($0) })) {
                                 ForEach(catalog.films) { stock in Text(stock.name).tag(stock.index) }
-                            }
+                            }.accessibilityIdentifier("editor.filmStock")
                             Text("Film simulation is experimental. Previews can take longer.").font(.caption).foregroundStyle(.secondary)
                         }
                         Button("Advanced film…") { editingFilm = true }.accessibilityIdentifier("editor.filmAdvanced")
@@ -187,7 +202,7 @@ private struct EditorView: View {
                             Button("Reload") { if model.currentEdits == nil { model.select(model.selectedID) } else { model.requestPreview() } }
                         }
                     }
-                    .disabled(model.isExporting || model.isBenchmarking || model.isTransferringRecipe || model.selectionLoading || model.currentEdits == nil)
+                    .disabled(model.isExporting || model.isBenchmarking || model.isTransferringRecipe || model.isApplyingLook || model.selectionLoading || model.currentEdits == nil)
                     Text("Calibrated RAW color · X3I uses the middle exposure").font(.caption).foregroundStyle(.secondary)
                     if let url = model.exportURL {
                         ShareLink(item: url) { Label("Share exported file", systemImage: "square.and.arrow.up") }
@@ -211,7 +226,7 @@ private struct EditorView: View {
                     Button("Export sidecar") { model.exportSidecar() }
                 }
             } label: { Label("Export and recipes", systemImage: "square.and.arrow.up") }
-            .disabled(model.currentEdits == nil || model.isExporting || model.isBenchmarking || model.isTransferringRecipe || model.selectionLoading)
+            .disabled(model.currentEdits == nil || model.isExporting || model.isBenchmarking || model.isTransferringRecipe || model.isApplyingLook || model.selectionLoading)
         }
         .sheet(item: $model.cropSession, onDismiss: { model.endCrop() }) { session in
             CropEditor(model: model, session: session)
@@ -246,6 +261,14 @@ private struct EditorView: View {
             Text("Apply the selected desktop sidecar after validating it against this RAW image. The original RAW and sidecar files stay unchanged.")
         }
 
+    }
+
+    private func cameraMatchingName(_ profiles: [CameraProfile]) -> String {
+        if model.settings.film != nil { return "Film stock" }
+        if model.settings.fields["rawColor"] != nil && model.settings.fields["rawColor"] != .null { return "Full spectrum" }
+        if model.settings.fields["monochrome"] != nil && model.settings.fields["monochrome"] != .null { return "Monochrome" }
+        let id = model.settings.fields["cameraProfile"] ?? .string("Standard")
+        return profiles.first { .string($0.id) == id }?.name ?? "Imported profile"
     }
 
     private func control(_ title: String, value: Binding<Double>, range: ClosedRange<Double>, step: Double, display: String) -> some View {

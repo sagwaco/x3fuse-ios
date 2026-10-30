@@ -31,6 +31,11 @@ enum ExportFormat: String, CaseIterable, Identifiable {
     var fileExtension: String { switch self { case .jpeg: return "jpg"; case .tiff: return "tif"; case .dng: return "dng" } }
 }
 
+struct CameraProfile: Decodable, Identifiable {
+    let id: String
+    let name: String
+}
+
 struct FilmStock: Decodable, Identifiable {
     let index: Int
     let key: String
@@ -54,11 +59,13 @@ struct ImageInfo {
     let asShotTemperature: Double
     let catalog: FilmCatalog
     let prepareMilliseconds: Double
+    var cameraProfiles: [CameraProfile] = []
 }
 
 protocol ImageEngine: Sendable {
     func prepare(asset: ImportedAsset) async throws -> ImageInfo
     func normalize(_ settings: EditSettings) async throws -> EditSettings
+    func applyLook(_ id: String, to settings: EditSettings) async throws -> EditSettings
     func validateDocument(asset: ImportedAsset, json: String, previous: RecipeDocument?) async throws -> RecipeDocument
     func exportSidecar(asset: ImportedAsset, document: RecipeDocument) async throws -> URL
     func render(asset: ImportedAsset, settings: EditSettings) async throws -> PreviewResult
@@ -107,17 +114,31 @@ final class EngineWorker: ImageEngine, @unchecked Sendable {
             let defaults = try JSONSerialization.data(withJSONObject: self.info["defaultRecipe"] as? [String: Any] ?? [:])
             let recipe = try self.normalizeNow(EditSettings(canonicalJSON: String(decoding: defaults, as: UTF8.self)))
             let catalogJSON = try self.stringResult { x3f_film_catalog($0, $1) }
+            let profiles = try JSONSerialization.data(withJSONObject: self.info["cameraProfiles"] as? [[String: Any]] ?? [])
             return ImageInfo(width: self.info["width"] as? Int ?? 1, height: self.info["height"] as? Int ?? 1,
                              sourceRevision: self.info["sourceRevision"] as? String ?? "",
                              renderVersion: self.info["renderVersion"] as? Int ?? 0,
                              defaultRecipe: recipe, asShotTemperature: self.info["asShotTemperature"] as? Double ?? 6500,
                              catalog: try JSONDecoder().decode(FilmCatalog.self, from: Data(catalogJSON.utf8)),
-                             prepareMilliseconds: elapsed)
+                             prepareMilliseconds: elapsed,
+                             cameraProfiles: try JSONDecoder().decode([CameraProfile].self, from: profiles))
         }
     }
 
     func normalize(_ settings: EditSettings) async throws -> EditSettings {
         try await serial { try self.normalizeNow(settings) }
+    }
+
+    func applyLook(_ id: String, to settings: EditSettings) async throws -> EditSettings {
+        try await serial {
+            let recipe = try self.normalizeNow(settings).json
+            let json = try self.stringResult { output, error in
+                recipe.withCString { recipe in
+                    id.withCString { x3f_recipe_apply_look(recipe, $0, output, error) }
+                }
+            }
+            return try EditSettings(canonicalJSON: json)
+        }
     }
 
     private func normalizeNow(_ settings: EditSettings) throws -> EditSettings {

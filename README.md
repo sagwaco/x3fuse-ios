@@ -34,6 +34,12 @@ draft until Apply; Cancel leaves saved edits unchanged. Rotate left or right in
 quarter turns. The curve editor supports master, red, green, and blue channels.
 Add, move, or remove points with touch or the point controls.
 
+Use Camera matching to select a Sigma color mode from the profiles embedded in
+that Merrill or Quattro file. Selecting a camera profile disables film. Turning
+Film back on restores its saved settings, including custom paper and negative
+scan. Selecting a different film stock applies that stock's defaults through the
+shared renderer. Other edits are preserved.
+
 Use HSL to change hue, saturation, and luminance for eight color bands. Color grading
 has separate shadows, midtones, and highlights wheels, plus blending and balance.
 Drag a wheel or use its hue, strength, and luminance controls. These sheets keep a
@@ -105,7 +111,8 @@ physical-device rendering or performance.
 
 The separate `X3FuseNativeUISmoke` scheme checks the editing sheets with a real
 image and saves screenshots in the test result. First import a copied RAW into
-the simulator app, or run its `--benchmark` path once. Then run:
+the simulator app, or run its `--benchmark` path once. The camera matching tests
+require both `DP2M0643.X3F` and `DP0Q0010.X3F`. Then run:
 
 ```sh
 xcodebuild -project X3FuseNative.xcodeproj -scheme X3FuseNativeUISmoke \
@@ -156,3 +163,6 @@ Reset edits stores an explicit default recipe instead of deleting the local edit
 presentation and SFD merging need separate memory and timing evidence.
 
 The source uses GPL-3.0-only. Preserve the renderer attribution and bundled notices.
+
+Apple RAW DNG import remains deferred. See the [decoder evaluation](docs/APPLE_RAW.md)
+for the measured behavior and integration requirements.

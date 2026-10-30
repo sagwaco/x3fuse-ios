@@ -3,6 +3,135 @@ import XCTest
 
 final class AppTests: XCTestCase {
     @MainActor
+    func testFilmOffOnPreservesSavedFilmExactly() async throws {
+        try await assertFilmRestoration(afterCamera: false)
+    }
+
+    @MainActor
+    func testCameraToFilmPreservesSavedFilmExactly() async throws {
+        try await assertFilmRestoration(afterCamera: true)
+    }
+
+    @MainActor
+    private func assertFilmRestoration(afterCamera: Bool) async throws {
+        for stock in [2, 20] {
+            let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            let asset = ImportedAsset(id: UUID(), name: "photo.x3f", sourceName: "source.x3f", importedAt: Date())
+            try FileManager.default.createDirectory(at: root.appendingPathComponent(asset.id.uuidString), withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: root) }
+            let engine = HeldEngine()
+            let model = AppModel(library: AssetLibrary(store: AssetStore(root: root)), worker: engine)
+            model.assets = [asset]; model.select(asset.id)
+            try await waitUntil { engine.renderedSettings.count == 1 }
+            engine.completeRender()
+            try await waitUntil { model.frame != nil && !model.isRendering }
+            let original = try await engine.normalize(EditSettings(canonicalJSON: """
+            {"seed":4321,"exposure":1.2,"monochrome":{"filter":"red"},
+             "film":{"film":\(stock),"paper":3,"negative":true,"evFilm":0.7,"evPaper":1.2,
+                     "grainParams":{"rmsGranularity":[5,8,11],"blur":0.9},"couplersRadius":0.002},
+             "effects":{"grain":false,"halation":false,"grainParams":{"rmsGranularity":[3,7,9]}}}
+            """))
+            model.changeSettings { $0 = original }
+            try await waitUntil { engine.renderedSettings.count == 2 }
+            if afterCamera {
+                model.selectCameraProfile("Monochrome")
+                try await waitUntil { !model.isApplyingLook }
+                XCTAssertNil(model.settings.film)
+                XCTAssertEqual(model.settings.fields["cameraProfile"], .string("Monochrome"))
+            } else {
+                model.setFilmEnabled(false)
+                XCTAssertNil(model.settings.film)
+            }
+            model.setFilmEnabled(true)
+            let restored = try await engine.normalize(model.settings)
+            XCTAssertEqual(restored.film, original.film, "Restoring film must keep custom paper and direct scan settings.")
+            XCTAssertEqual(restored.fields["cameraProfile"], .null)
+            XCTAssertEqual(restored.fields["rawColor"] ?? .null, .null)
+            XCTAssertEqual(restored.fields["monochrome"], stock == 20 ? .object(["filter": .string("red")]) : .null)
+            for key in original.fields.keys where !["film", "cameraProfile", "rawColor", "monochrome"].contains(key) {
+                XCTAssertEqual(restored.fields[key], original.fields[key], key)
+            }
+            engine.completeRender()
+            try await waitUntil { engine.renderedSettings.count == 3 }
+            engine.completeRender()
+            try await waitUntil { !model.isRendering }
+            model.enterBackground()
+            try await Task.sleep(for: .milliseconds(30))
+        }
+    }
+
+    @MainActor
+    func testSuspendedCameraLookCannotApplyAfterSourceReturnsToSameAsset() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let assets = ["a.x3f", "b.x3f"].map {
+            ImportedAsset(id: UUID(), name: $0, sourceName: "source.x3f", importedAt: Date())
+        }
+        for asset in assets {
+            try FileManager.default.createDirectory(at: root.appendingPathComponent(asset.id.uuidString), withIntermediateDirectories: true)
+        }
+        defer { try? FileManager.default.removeItem(at: root) }
+        let engine = HeldEngine(suspendLooks: true)
+        let model = AppModel(library: AssetLibrary(store: AssetStore(root: root)), worker: engine)
+        model.assets = assets; model.select(assets[0].id)
+        try await waitUntil { engine.renderedSettings.count == 1 }
+        engine.completeRender()
+        try await waitUntil { model.frame != nil && !model.isRendering }
+        model.selectCameraProfile("Monochrome")
+        try await waitUntil { engine.isLookSuspended }
+        for (index, asset) in [assets[1], assets[0]].enumerated() {
+            model.select(asset.id)
+            try await waitUntil { engine.renderedSettings.count == index + 2 }
+            engine.completeRender()
+            try await waitUntil { model.frame != nil && !model.isRendering }
+        }
+        let original = model.settings
+        let revision = model.currentEdits?.document.revision
+        engine.completeLook()
+        try await waitUntil { !model.isApplyingLook }
+        XCTAssertEqual(model.selectedID, assets[0].id)
+        XCTAssertEqual(model.settings, original)
+        XCTAssertEqual(model.currentEdits?.document.revision, revision)
+        XCTAssertEqual(engine.renderedSettings.count, 3)
+        model.enterBackground()
+        try await Task.sleep(for: .milliseconds(30))
+    }
+
+    @MainActor
+    func testCameraMatchingValidatesAvailabilityAndDiscardsStaleChanges() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let asset = ImportedAsset(id: UUID(), name: "photo.x3f", sourceName: "source.x3f", importedAt: Date())
+        try FileManager.default.createDirectory(at: root.appendingPathComponent(asset.id.uuidString), withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let engine = HeldEngine()
+        let model = AppModel(library: AssetLibrary(store: AssetStore(root: root)), worker: engine)
+        model.assets = [asset]; model.select(asset.id)
+        try await waitUntil { engine.renderedSettings.count == 1 }
+        engine.completeRender()
+        try await waitUntil { model.frame != nil && !model.isRendering }
+        let original = model.settings
+        model.selectCameraProfile("Unavailable")
+        XCTAssertFalse(model.isApplyingLook)
+        XCTAssertEqual(model.settings, original)
+        model.selectCameraProfile("Monochrome")
+        try await waitUntil { !model.isApplyingLook }
+        XCTAssertEqual(model.settings.fields["cameraProfile"], .string("Monochrome"))
+        XCTAssertEqual(model.settings.fields["monochrome"], .object(["filter": .string("neutral")]))
+        XCTAssertEqual(model.settings.fields["seed"], original.fields["seed"])
+        try await waitUntil { engine.renderedSettings.count == 2 }
+        model.selectCameraProfile("Standard")
+        model.changeSettings { $0.exposure = 0.5 }
+        try await waitUntil { !model.isApplyingLook }
+        XCTAssertEqual(model.settings.exposure, 0.5)
+        XCTAssertEqual(model.settings.fields["cameraProfile"], .string("Monochrome"))
+        engine.completeRender()
+        try await waitUntil { engine.renderedSettings.count == 3 }
+        engine.completeRender()
+        try await waitUntil { !model.isRendering }
+        model.enterBackground()
+        try await Task.sleep(for: .milliseconds(30))
+    }
+
+    @MainActor
     func testResetEditsClearsCanonicalColorAdjustments() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let asset = ImportedAsset(id: UUID(), name: "photo.x3f", sourceName: "source.x3f", importedAt: Date())
@@ -328,15 +457,41 @@ private final class HeldEngine: ImageEngine, @unchecked Sendable {
     private var settings: [EditSettings] = []
     private var cancellations = 0
     private var completion: CheckedContinuation<PreviewResult, Error>?
+    private let suspendLooks: Bool
+    private var lookCompletion: CheckedContinuation<Void, Never>?
+    var isLookSuspended: Bool { lock.withLock { lookCompletion != nil } }
+
+    init(suspendLooks: Bool = false) { self.suspendLooks = suspendLooks }
+
+    func completeLook() {
+        let continuation = lock.withLock {
+            defer { lookCompletion = nil }
+            return lookCompletion
+        }
+        continuation?.resume()
+    }
     var renderedSettings: [EditSettings] { lock.withLock { settings } }
     var cancelCount: Int { lock.withLock { cancellations } }
 
     func prepare(asset: ImportedAsset) async throws -> ImageInfo {
         let defaults = try await normalize(EditSettings(canonicalJSON: "{\"film\":null,\"seed\":1234}"))
         return ImageInfo(width: 1200, height: 800, sourceRevision: "test", renderVersion: 1, defaultRecipe: defaults, asShotTemperature: 6500,
-                         catalog: FilmCatalog(films: [], defaultFilm: [:]), prepareMilliseconds: 1)
+                         catalog: FilmCatalog(films: [
+                            FilmStock(index: 2, key: "kodak_portra_400", name: "Kodak Portra 400", monochrome: false),
+                            FilmStock(index: 20, key: "kodak_doublex", name: "Kodak Double-X 5222", monochrome: true)
+                         ], defaultFilm: [:]), prepareMilliseconds: 1,
+                         cameraProfiles: [CameraProfile(id: "Standard", name: "Standard"), CameraProfile(id: "Monochrome", name: "Monochrome")])
     }
     func normalize(_ settings: EditSettings) async throws -> EditSettings { try await EngineWorker().normalize(settings) }
+    func applyLook(_ id: String, to settings: EditSettings) async throws -> EditSettings {
+        let applied = try await EngineWorker().applyLook(id, to: settings)
+        if suspendLooks {
+            await withCheckedContinuation { continuation in
+                lock.withLock { lookCompletion = continuation }
+            }
+        }
+        return applied
+    }
     func validateDocument(asset: ImportedAsset, json: String, previous: RecipeDocument?) async throws -> RecipeDocument {
         let values = try JSONSerialization.jsonObject(with: Data(json.utf8)) as! [String: Any]
         let recipe = String(decoding: try JSONSerialization.data(withJSONObject: values["recipe"]!), as: UTF8.self)
