@@ -2,6 +2,39 @@ import XCTest
 @testable import X3FuseNative
 
 final class AppTests: XCTestCase {
+    @MainActor
+    func testDenoiseReleaseQueuesOnceAndOnlyNewDenoiseCancelsPreparation() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let asset = ImportedAsset(id: UUID(), name: "photo.x3f", sourceName: "source.x3f", importedAt: Date())
+        try FileManager.default.createDirectory(at: root.appendingPathComponent(asset.id.uuidString), withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let engine = HeldEngine()
+        let model = AppModel(library: AssetLibrary(store: AssetStore(root: root)), worker: engine)
+        model.assets = [asset]
+        model.select(asset.id)
+        try await waitUntil { engine.renderedSettings.count == 1 }
+        engine.completeRender()
+        try await waitUntil { model.frame != nil && !model.isRendering }
+        var draft = DenoiseDraft(recipe: model.settings)
+        for intensity in 1...5 { draft.value.intensity = Double(intensity) }
+        XCTAssertEqual(engine.renderedSettings.count, 1)
+        model.applyDenoise(try XCTUnwrap(draft.finishGesture()))
+        try await waitUntil { engine.renderedSettings.count == 2 && model.isPreparingNoise }
+        let cancellations = engine.cancelCount
+        model.changeSettings { $0.exposure = 0.5 }
+        XCTAssertEqual(engine.cancelCount, cancellations)
+        draft.value.intensity = 3
+        model.applyDenoise(try XCTUnwrap(draft.finishGesture()))
+        XCTAssertEqual(engine.cancelCount, cancellations + 1)
+        engine.completeRender()
+        try await waitUntil { engine.renderedSettings.count == 3 }
+        XCTAssertEqual(engine.renderedSettings.last?["denoise"], 3)
+        engine.completeRender()
+        try await waitUntil { !model.isRendering }
+        model.enterBackground()
+        try await Task.sleep(for: .milliseconds(30))
+    }
+
     func testViewportPreservesEditsAndResetsWhenSourceChanges() {
         var viewport = ViewportTransform()
         let source = UUID()
@@ -266,7 +299,7 @@ private final class HeldEngine: ImageEngine, @unchecked Sendable {
 
     func prepare(asset: ImportedAsset) async throws -> ImageInfo {
         let defaults = try await normalize(EditSettings(canonicalJSON: "{\"film\":null,\"seed\":1234}"))
-        return ImageInfo(sourceRevision: "test", renderVersion: 1, defaultRecipe: defaults, asShotTemperature: 6500,
+        return ImageInfo(width: 1200, height: 800, sourceRevision: "test", renderVersion: 1, defaultRecipe: defaults, asShotTemperature: 6500,
                          catalog: FilmCatalog(films: [], defaultFilm: [:]), prepareMilliseconds: 1)
     }
     func normalize(_ settings: EditSettings) async throws -> EditSettings { try await EngineWorker().normalize(settings) }

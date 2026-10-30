@@ -18,6 +18,11 @@ final class AppModel: ObservableObject {
     @Published private(set) var imageInfo: ImageInfo?
     @Published private(set) var currentEdits: NativeEdits?
     @Published var isTransferringRecipe = false
+    @Published var cropSession: CropSession?
+    @Published private(set) var isCropping = false
+    @Published private(set) var isPreparingNoise = false
+    private var preparedNoise: DenoiseSettings?
+    private var renderingNoise: DenoiseSettings?
     private var selectionRevision: UInt64 = 0
     private var disabledFilm: [String: JSONValue]?
 
@@ -65,6 +70,7 @@ final class AppModel: ObservableObject {
         imageInfo = nil
         currentEdits = nil
         disabledFilm = nil
+        preparedNoise = nil
         requests.cancel()
         worker.cancel()
         guard let asset = selectedAsset else { return }
@@ -93,6 +99,7 @@ final class AppModel: ObservableObject {
                 try await library.acceptEdits(snapshot, asset: asset, replacing: loaded.data, persist: loaded.data != nil)
                 guard selectionRevision == selection else { return }
                 imageInfo = metadata
+                preparedNoise = DenoiseSettings(recipe: metadata.defaultRecipe)
                 asShotTemperature = metadata.asShotTemperature
                 currentEdits = snapshot
                 settings = validated.recipe
@@ -157,7 +164,7 @@ final class AppModel: ObservableObject {
     func requestPreview() {
         guard let asset = selectedAsset, !selectionLoading, currentEdits != nil else { return }
         requests.submit((asset, settings))
-        guard active, !isExporting, !isBenchmarking, !isTransferringRecipe else { return }
+        guard active, !isExporting, !isBenchmarking, !isTransferringRecipe, !isCropping else { return }
         guard !pumping else { return }
         pumping = true
         Task { await drainPreviews() }
@@ -165,11 +172,14 @@ final class AppModel: ObservableObject {
 
     private func drainPreviews() async {
         isRendering = true
-        defer { pumping = false; isRendering = false }
-        while active, !isExporting, !isBenchmarking, !isTransferringRecipe, let (revision, request) = requests.take() {
-            status = "Rendering…"
+        defer { pumping = false; isRendering = false; isPreparingNoise = false; renderingNoise = nil }
+        while active, !isExporting, !isBenchmarking, !isTransferringRecipe, !isCropping, let (revision, request) = requests.take() {
+            renderingNoise = DenoiseSettings(recipe: request.1)
+            isPreparingNoise = renderingNoise != preparedNoise
+            status = isPreparingNoise ? "Applying noise reduction…" : "Rendering…"
             do {
                 let result = try await worker.render(asset: request.0, settings: request.1)
+                if selectedID == request.0.id { preparedNoise = DenoiseSettings(recipe: result.recipe) }
                 guard active, requests.revision == revision, selectedID == request.0.id else { continue }
                 frame = result.frame
                 settings = result.recipe
@@ -177,6 +187,7 @@ final class AppModel: ObservableObject {
                 asShotTemperature = result.asShotTemperature
                 status = "\(result.frame.width) × \(result.frame.height) preview · \(Int(result.renderMilliseconds)) ms render"
             } catch is CancellationError {
+                if isPreparingNoise { preparedNoise = nil }
                 continue
             } catch {
                 guard active, requests.revision == revision, selectedID == request.0.id else { continue }
@@ -234,6 +245,43 @@ final class AppModel: ObservableObject {
         guard let defaults = imageInfo?.defaultRecipe else { return }
         disabledFilm = nil
         changeSettings { $0 = defaults }
+    }
+
+    func rotate(_ quarterTurns: Int) {
+        changeSettings { recipe in
+            recipe.fields["rotation"] = .integer(Int64((Int(recipe["rotation"]) + quarterTurns + 4) % 4))
+        }
+    }
+
+    func beginCrop() {
+        guard let asset = selectedAsset, let info = imageInfo, !isCropping else { return }
+        requests.cancel()
+        worker.cancel()
+        isCropping = true
+        cropSession = CropSession(asset: asset, recipe: settings, cameraCrop: CropRect(recipe: info.defaultRecipe),
+                                  imageSize: CGSize(width: info.width, height: info.height))
+    }
+
+    func cropPreview(_ session: CropSession) async throws -> PixelFrame {
+        guard selectedID == session.asset.id, isCropping else { throw CancellationError() }
+        return try await worker.render(asset: session.asset, settings: session.previewRecipe).frame
+    }
+
+    func applyCrop(_ crop: CropRect, session: CropSession) {
+        guard selectedID == session.asset.id else { return }
+        changeSettings { $0.fields["crop"] = crop.json }
+    }
+
+    func endCrop() {
+        worker.cancel()
+        isCropping = false
+        cropSession = nil
+        if active { requestPreview() }
+    }
+
+    func applyDenoise(_ noise: DenoiseSettings) {
+        if isPreparingNoise, renderingNoise != noise { worker.cancel() }
+        changeSettings { noise.apply(to: &$0) }
     }
 
     func setFilmEnabled(_ enabled: Bool) {
@@ -396,6 +444,24 @@ final class AppModel: ObservableObject {
             report["filmStockKey"] = metadata.catalog.films.first { $0.index == film.recipe.filmStock }?.key
             report["filmRecipeJSON"] = film.recipe.canonicalJSON
             report["memoryAfterFilmBytes"] = MemorySampler.footprint()
+            status = "Benchmark: crop, rotation, curves and noise reduction…"
+            var editingRecipe = settings
+            editingRecipe.fields["crop"] = CropRect(x: 0.1, y: 0.1, width: 0.8, height: 0.8).json
+            editingRecipe.fields["rotation"] = .integer(1)
+            var curve = CurveDraft(recipe: editingRecipe)
+            _ = curve.add(channel: .master, point: CurvePoint(x: 0.5, y: 0.6))
+            curve.apply(to: &editingRecipe)
+            var noise = DenoiseSettings(recipe: editingRecipe)
+            noise.intensity = 6
+            noise.apply(to: &editingRecipe)
+            let editingStart = ContinuousClock.now
+            let editing = try await worker.render(asset: asset, settings: editingRecipe)
+            report["editingRenderMilliseconds"] = editingStart.millisecondsToNow
+            report["editingRenderTimingScope"] = "Recipe normalization, RAW reprepare and preview render wall time"
+            report["editingRecipeJSON"] = editing.recipe.canonicalJSON
+            report["editingPreviewWidth"] = editing.frame.width
+            report["editingPreviewHeight"] = editing.frame.height
+            report["memoryAfterEditingBytes"] = MemorySampler.footprint()
             report["status"] = "ok"
             status = "Benchmark complete. See Documents/Benchmarks/report.json."
         } catch {

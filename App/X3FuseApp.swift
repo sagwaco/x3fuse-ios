@@ -106,6 +106,7 @@ private struct EditorView: View {
     @State private var importingSidecar = false
     @State private var pendingSidecar: URL?
     @State private var sidecarAssetID: UUID?
+    @State private var editingCurves = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -125,6 +126,16 @@ private struct EditorView: View {
                         }
                     }
                     VStack(spacing: 14) {
+                        HStack {
+                            Button("Crop") { model.beginCrop() }.accessibilityIdentifier("editor.crop")
+                            Spacer()
+                            Button { model.rotate(3) } label: { Image(systemName: "rotate.left") }
+                                .accessibilityLabel("Rotate left").accessibilityIdentifier("editor.rotateLeft")
+                            Button { model.rotate(1) } label: { Image(systemName: "rotate.right") }
+                                .accessibilityLabel("Rotate right").accessibilityIdentifier("editor.rotateRight")
+                            Spacer()
+                            Button("Curves") { editingCurves = true }.accessibilityIdentifier("editor.curves")
+                        }
                         control("Exposure", value: Binding(get: { model.settings.exposure }, set: { value in model.changeSettings { $0.exposure = value } }),
                                 range: -5...5, step: 0.1, display: String(format: "%+.1f EV", model.settings.exposure))
                         DisclosureGroup("Light and color") {
@@ -157,6 +168,9 @@ private struct EditorView: View {
                             }
                             Text("Film previews can take longer. Other film parameters are preserved.").font(.caption).foregroundStyle(.secondary)
                         }
+                        DisclosureGroup("Detail and noise reduction") {
+                            DetailControls(model: model).id(model.selectedID)
+                        }.accessibilityIdentifier("editor.detail")
                         HStack {
                             Button("Reset edits") { model.resetEdits() }
                             Spacer()
@@ -188,6 +202,12 @@ private struct EditorView: View {
                 }
             } label: { Label("Export and recipes", systemImage: "square.and.arrow.up") }
             .disabled(model.currentEdits == nil || model.isExporting || model.isBenchmarking || model.isTransferringRecipe || model.selectionLoading)
+        }
+        .sheet(item: $model.cropSession, onDismiss: { model.endCrop() }) { session in
+            CropEditor(model: model, session: session)
+        }
+        .sheet(isPresented: $editingCurves) {
+            if let sourceID = model.selectedID { CurveEditor(model: model, sourceID: sourceID, recipe: model.settings) }
         }
         .fileImporter(isPresented: $importingSidecar, allowedContentTypes: [.json], allowsMultipleSelection: false) { result in
             switch result {

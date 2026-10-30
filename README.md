@@ -28,7 +28,16 @@ Application Support asset directory. X3I uses the middle exposure. Originals
 remain unchanged. The library restores imported copies at launch.
 
 Edit exposure, white balance, light, and color with native controls. Enable film
-and choose a stock. New photos start with film disabled. The app keeps the full
+and choose a stock. New photos start with film disabled. Use Crop for corner handles,
+aspect presets, and precise position/size controls. Crop and curve sheets keep a
+draft until Apply; Cancel leaves saved edits unchanged. Rotate left or right in
+quarter turns. The curve editor supports master, red, green, and blue channels.
+Add, move, or remove points with touch or the point controls.
+
+Detail and noise reduction includes intensity, NLM/BM3D, luminance/chroma switches,
+strength, and sharpening. Noise sliders apply on release because changes prepare
+the RAW again. Accessibility adjustments apply without a drag. Advanced noise
+window settings from imported recipes are kept. The app keeps the full
 canonical recipe, including settings that have no native control yet. App-local
 edits are saved atomically in a versioned `native-edits.json` file. Version-1
 native settings migrate once against the source defaults. Unsupported, unreadable,
@@ -68,6 +77,18 @@ Run the X3FuseNative scheme tests on an iOS simulator. CI builds both Rust
 slices and runs the simulator tests. CI does not establish
 physical-device rendering or performance.
 
+The separate `X3FuseNativeUISmoke` scheme checks the editing sheets with a real
+image and saves screenshots in the test result. First import a copied RAW into
+the simulator app, or run its `--benchmark` path once. Then run:
+
+```sh
+xcodebuild -project X3FuseNative.xcodeproj -scheme X3FuseNativeUISmoke \
+  -configuration Release -destination 'platform=iOS Simulator,id=SIMULATOR_UDID' \
+  CODE_SIGNING_ALLOWED=NO test
+```
+
+This fixture-dependent smoke check is separate from the unit suite and CI.
+
 ## Device benchmark
 
 Place a copied X3F or X3I fixture in the app's Documents/Benchmarks folder. Launch
@@ -76,7 +97,9 @@ first supported filename in sorted order is used. Results are written to
 Documents/Benchmarks/report.json. The runner imports a copy, prepares a RAW,
 renders a preview, and exports JPEG, TIFF, and DNG. It also checks a sidecar round
 trip and renders one film preview. The report records each export time and the
-exact film recipe. It samples process physical footprint at 50 ms intervals.
+exact film recipe. It then renders a combined crop, rotation, curve, and denoise
+change and records its recipe, dimensions, time, and memory. The combined edit time
+includes normalization and RAW preparation. It samples physical footprint every 50 ms.
 These samples are a lower bound on peak memory.
 
 See [performance checks](docs/PERFORMANCE.md) for the fixture matrix and baseline.
@@ -85,10 +108,17 @@ Processing timings do not measure tap latency or display frame rate.
 ## Remaining migration
 
 The current app covers X3F/X3I import, browsing, local edits, desktop sidecar exchange,
-light and color controls, film stock selection, and JPEG/TIFF/DNG export. Remaining
-work includes advanced edit controls, DNG import, metadata parity, larger libraries,
-and measured UI latency. Original TIFF conversion is not included. Reset stores an
-explicit default recipe instead of deleting the local edit file. Direct GPU
+light and color controls, film stocks, crop/rotation, curves, noise reduction, and
+JPEG/TIFF/DNG export. Remaining work includes HSL, color wheels, advanced film
+controls, DNG import, metadata parity, larger libraries, and measured UI latency. Original TIFF conversion is not included.
+
+While cropping, the draft hides existing straightening. Apply restores it; the
+straightened output fits inside the selected rectangle. Reset crop restores the
+camera rectangle while keeping rotation, straighten, pitch, and yaw. Existing
+perspective correction can require a smaller crop to avoid blank corners.
+Precise crop sliders provide an accessible alternative to dragging corners.
+
+Reset edits stores an explicit default recipe instead of deleting the local edit file. Direct GPU
 presentation and SFD merging need separate memory and timing evidence.
 
 The source uses GPL-3.0-only. Preserve the renderer attribution and bundled notices.

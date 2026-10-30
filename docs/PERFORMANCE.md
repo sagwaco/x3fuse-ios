@@ -90,3 +90,33 @@ sidecar replacement, film parameter preservation, and conflicting saved edits.
 Host engine tests passed with Merrill, Quattro, and a real desktop version-1
 sidecar. This does not establish behavior for all camera bodies or X3I fixtures.
 Reports are in `docs/benchmarks/stage2-merrill.json` and `stage2-quattro.json`.
+
+## Stage 3 editing controls
+
+The signed Release build completed the expanded device run on 2026-10-29. After
+all stage-2 checks, it rendered a crop at x/y 0.1 with width/height 0.8, clockwise
+rotation 1, a master curve point at 0.5/0.6, and NLM denoise intensity 6.
+`editingRenderMilliseconds` includes normalization, RAW preparation, and rendering.
+Both output previews were 1024 by 1536. Each report stores the exact edit recipe.
+
+| Fixture | Combined edit ms | Sampled peak MB |
+| --- | ---: | ---: |
+| Merrill DP2M0643 | 2459 | 1056 |
+| Quattro DP0Q0010 | 2734 | 1263 |
+
+Both reports have status `ok`; JPEG, TIFF, DNG, sidecar equality, and film preview
+checks still pass. These are single-run processing measurements. They do not
+measure tap latency. BM3D speed, sustained thermal behavior, and all camera models
+remain unmeasured on the device. No increased-memory entitlement is used.
+
+Twenty Release simulator unit tests passed. A separate real-image UI smoke test
+passed on iPad mini and iPhone 17 simulators with iOS 26.0. It exercised a crop
+corner drag, Reset/Cancel, square crop Apply, and curve slider Cancel/Apply. Screenshots
+were checked on both layouts. The initial UI test selected the editor's scroll view
+behind the curve sheet; the corrected test selects the sheet's scroll view.
+
+Host engine tests passed on Merrill and Quattro: crop and rotation pixel mapping,
+curve validation and output, denoise re-preparation, cancellation recovery, and
+deterministic restoration of prior settings. The renderer and C ABI did not change
+in this stage. Reports are in `docs/benchmarks/stage3-merrill.json` and
+`stage3-quattro.json`.

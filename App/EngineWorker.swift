@@ -44,6 +44,8 @@ struct FilmCatalog: Decodable {
 }
 
 struct ImageInfo {
+    let width: Int
+    let height: Int
     let sourceRevision: String
     let renderVersion: Int
     let defaultRecipe: EditSettings
@@ -103,7 +105,8 @@ final class EngineWorker: ImageEngine, @unchecked Sendable {
             let defaults = try JSONSerialization.data(withJSONObject: self.info["defaultRecipe"] as? [String: Any] ?? [:])
             let recipe = try self.normalizeNow(EditSettings(canonicalJSON: String(decoding: defaults, as: UTF8.self)))
             let catalogJSON = try self.stringResult { x3f_film_catalog($0, $1) }
-            return ImageInfo(sourceRevision: self.info["sourceRevision"] as? String ?? "",
+            return ImageInfo(width: self.info["width"] as? Int ?? 1, height: self.info["height"] as? Int ?? 1,
+                             sourceRevision: self.info["sourceRevision"] as? String ?? "",
                              renderVersion: self.info["renderVersion"] as? Int ?? 0,
                              defaultRecipe: recipe, asShotTemperature: self.info["asShotTemperature"] as? Double ?? 6500,
                              catalog: try JSONDecoder().decode(FilmCatalog.self, from: Data(catalogJSON.utf8)),

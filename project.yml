@@ -59,6 +59,17 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.sagwa.X3Fuse.native.tests
     dependencies:
       - target: X3FuseNative
+  X3FuseNativeUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [UITests]
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: "YES"
+        PRODUCT_BUNDLE_IDENTIFIER: com.sagwa.X3Fuse.native.uitests
+        TEST_TARGET_NAME: X3FuseNative
+    dependencies:
+      - target: X3FuseNative
 schemes:
   X3FuseNative:
     build:
@@ -67,3 +78,10 @@ schemes:
         X3FuseNativeTests: [test]
     test:
       targets: [X3FuseNativeTests]
+  X3FuseNativeUISmoke:
+    build:
+      targets:
+        X3FuseNative: all
+        X3FuseNativeUITests: [test]
+    test:
+      targets: [X3FuseNativeUITests]
