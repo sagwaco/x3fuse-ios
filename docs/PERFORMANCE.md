@@ -173,3 +173,52 @@ Reports are `stage4-merrill.json` and `stage4-quattro.json`. These successful ru
 do not show that system memory pressure is resolved. The earlier failures remain
 part of the evidence. The last UI runs preceded only benchmark diagnostics and
 measurement-order changes; all 24 unit tests passed again after those changes.
+
+
+## Stage 5 advanced film
+
+The Release simulator unit suite passed all 26 tests before the final grain-range
+fix. Three focused film tests then passed with that fix, including channel values
+[0, 1, 100] and [0, 50, 100]. These valid imported values previously could create a
+reversed or zero-width slider range. The sheet now handles an immovable base and
+keeps the channel controls available. Tests also cover dirty-field preservation,
+monochrome inactive channels, native conversion, resets, disabled film, and null
+paper exposure. The final signed Release device build passed.
+
+All 16 host engine tests passed with the real Quattro, monochrome Merrill, and
+desktop sidecar fixtures. The three new stage-5 tests use 1024-pixel Metal previews
+to check exposure, gamma, filtration, couplers, grain, scatter, halation, and
+highlight controls. They also check native-over-legacy precedence, the metadata-only
+grain base, null versus zero paper exposure, direct-scan print bypass, monochrome
+filtration, and nested patch/sidecar preservation. Monochrome couplers affect the
+renderer even though both native and desktop UIs hide them. Formatting and clippy
+with warnings denied passed. An existing dependency future-compatibility warning
+for block 0.1.6 remains. No new export pixel comparison was added.
+
+The signed Release physical runs on 2026-10-29 completed the full benchmark with
+status `ok`, exact sidecar equality, and no cancellation events:
+
+| Fixture | Advanced film preview ms | Preview size | Sampled peak MB, full run |
+| --- | ---: | --- | ---: |
+| Merrill DP2M0643 | 493 | 1536 by 1024 | 1296 |
+| Quattro DP0Q0010 | 382 | 1536 by 659 | 1386 |
+
+The advanced step runs after HSL/grading and before exports. It enables native
+grain and halation, changes film/print exposure, gamma, filtration, and couplers,
+and uses source-default denoise 10. For the Merrill check only, Standard and
+`monochrome: null` allow color film processing. Saved photo edits are unchanged.
+The timing includes normalization and rendering with the RAW already prepared,
+including any film-resource setup for that step. It does not measure tap latency.
+Exact recipes are in `stage5-merrill.json` and `stage5-quattro.json`.
+
+Peak memory is for the entire combined run, not the film step. These passing runs
+do not resolve the earlier system-memory-pressure cancellations. Cancellation
+behavior, production Rust, the C ABI, and the bundled framework did not change.
+
+The final iPad simulator UI suite passed all three tests: crop/curves, HSL/grading,
+and advanced film. The film test also passed on the iPhone simulator. It covers
+Cancel, paper selection, manual then automatic paper exposure, grain and halation
+changes, Apply, and persistence after backgrounding and restart. Screenshots from
+both layouts were inspected. The first iPhone attempt failed because a test tap
+hit the switch row rather than its toggle; targeting the toggle fixed the test
+without an app change.

@@ -109,6 +109,7 @@ private struct EditorView: View {
     @State private var editingCurves = false
     @State private var editingHSL = false
     @State private var editingGrading = false
+    @State private var editingFilm = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -169,12 +170,14 @@ private struct EditorView: View {
                                     range: -2000...2000, step: 1, display: String(format: "%+.0f", model.settings.tint))
                         }
                         Toggle("Film", isOn: Binding(get: { model.settings.film != nil }, set: { model.setFilmEnabled($0) }))
+                            .accessibilityIdentifier("editor.filmEnabled")
                         if model.settings.film != nil, let catalog = model.imageInfo?.catalog {
                             Picker("Film stock", selection: Binding(get: { model.settings.filmStock ?? 0 }, set: { model.selectFilm($0) })) {
                                 ForEach(catalog.films) { stock in Text(stock.name).tag(stock.index) }
                             }
-                            Text("Film previews can take longer. Other film parameters are preserved.").font(.caption).foregroundStyle(.secondary)
+                            Text("Film simulation is experimental. Previews can take longer.").font(.caption).foregroundStyle(.secondary)
                         }
+                        Button("Advanced film…") { editingFilm = true }.accessibilityIdentifier("editor.filmAdvanced")
                         DisclosureGroup("Detail and noise reduction") {
                             DetailControls(model: model).id(model.selectedID)
                         }.accessibilityIdentifier("editor.detail")
@@ -221,6 +224,11 @@ private struct EditorView: View {
         }
         .sheet(isPresented: $editingGrading) {
             if let sourceID = model.selectedID { GradingEditor(model: model, sourceID: sourceID, recipe: model.settings) }
+        }
+        .sheet(isPresented: $editingFilm) {
+            if let sourceID = model.selectedID, let catalog = model.imageInfo?.catalog {
+                FilmEditor(model: model, sourceID: sourceID, recipe: model.settings, catalog: catalog)
+            }
         }
         .fileImporter(isPresented: $importingSidecar, allowedContentTypes: [.json], allowsMultipleSelection: false) { result in
             switch result {

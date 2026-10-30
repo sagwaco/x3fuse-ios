@@ -41,6 +41,7 @@ struct FilmStock: Decodable, Identifiable {
 
 struct FilmCatalog: Decodable {
     let films: [FilmStock]
+    var papers: [FilmStock] = []
     let defaultFilm: [String: JSONValue]
 }
 

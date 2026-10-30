@@ -443,6 +443,35 @@ final class AppModel: ObservableObject {
             report["colorPreviewWidth"] = color.frame.width
             report["colorPreviewHeight"] = color.frame.height
             report["memoryAfterColorBytes"] = MemorySampler.footprint()
+            status = "Benchmark: advanced film, grain and halation…"
+            var advancedFilmRecipe = settings
+            if advancedFilmRecipe.hasMonochromeColorSource {
+                advancedFilmRecipe.fields["cameraProfile"] = .string("Standard")
+                advancedFilmRecipe.fields["monochrome"] = .null
+            }
+            advancedFilmRecipe.film = metadata.catalog.defaultFilm
+            var advancedFilm = FilmDraft(recipe: advancedFilmRecipe, defaults: metadata.catalog.defaultFilm)
+            advancedFilm.set("evFilm", .number(0.5))
+            advancedFilm.set("evPaper", .number(-0.25))
+            advancedFilm.set("couplers", .number(0.4))
+            advancedFilm.set("gammaFilm", .number(1.05))
+            advancedFilm.set("gammaPaper", .number(0.95))
+            advancedFilm.set("tuneM", .number(0.03))
+            advancedFilm.set("tuneY", .number(-0.04))
+            advancedFilm.set("grain", .bool(true))
+            advancedFilm.setGrainBase(6, monochrome: false)
+            advancedFilm.set("halation", .bool(true))
+            advancedFilm.set("halationAmount", .number(1.2), group: "halationParams")
+            advancedFilm.set("boostEv", .number(0.5), group: "halationParams")
+            advancedFilm.apply(to: &advancedFilmRecipe)
+            let advancedFilmStart = ContinuousClock.now
+            let advanced = try await worker.render(asset: asset, settings: advancedFilmRecipe)
+            report["advancedFilmRenderMilliseconds"] = advancedFilmStart.millisecondsToNow
+            report["advancedFilmRenderTimingScope"] = "Recipe normalization and preview render wall time; source-default denoise unchanged"
+            report["advancedFilmRecipeJSON"] = advanced.recipe.canonicalJSON
+            report["advancedFilmPreviewWidth"] = advanced.frame.width
+            report["advancedFilmPreviewHeight"] = advanced.frame.height
+            report["memoryAfterAdvancedFilmBytes"] = MemorySampler.footprint()
             status = "Benchmark: exporting…"
             for format in ExportFormat.allCases {
                 let exported = try await worker.export(asset: asset, settings: settings, format: format)

@@ -2,6 +2,107 @@ import XCTest
 @testable import X3FuseNative
 
 final class EditingTests: XCTestCase {
+    func testFilmGrainEndpointChannelsHaveSafeBaseRanges() async throws {
+        let engine = EngineWorker()
+        let defaultRecipe = try await engine.normalize(EditSettings())
+        let defaults = try XCTUnwrap(defaultRecipe.film)
+        for channels in [[0.0, 1, 100], [0, 50, 100]] {
+            var recipe = EditSettings()
+            var film = defaults
+            film["grainParams"] = .object(["rmsGranularity": .array(channels.map(JSONValue.number))])
+            recipe.film = film
+            let normalized = try await engine.normalize(recipe)
+            let draft = FilmDraft(recipe: normalized, defaults: defaults)
+            let range = draft.grainBaseRange(monochrome: false)
+            XCTAssertEqual(range.lowerBound, range.upperBound)
+            XCTAssertEqual(range.lowerBound, draft.grainBase(monochrome: false), accuracy: 1e-12)
+            XCTAssertEqual(draft.grainBaseRange(monochrome: true), 0...100)
+        }
+    }
+
+    func testFilmDraftPreservesNestedCalibrationSeedAndUntouchedFields() async throws {
+        let engine = EngineWorker()
+        let defaults = try await engine.normalize(EditSettings())
+        let original = try await engine.normalize(EditSettings(canonicalJSON: """
+        {"seed":1234,"exposure":1.2,"film":{"film":2,"paper":3,"couplersRadius":0.002,
+        "grainSize":1.7,"grainAmount":2.1,"grainParams":{"rmsGranularity":[5,8,11],"rmsBase":8,"blur":0.9,"multUsmAmount":2},
+        "halationSizeRgb":[50,60,70],"halationParams":{"scatterAmount":0.7,"boostEv":2,"protectEv":5}}}
+        """))
+        var draft = FilmDraft(recipe: original, defaults: try XCTUnwrap(defaults.film))
+        draft.set("evFilm", .number(0.5))
+        draft.set("halationAmount", .number(1.5), group: "halationParams")
+        draft.setGrainBase(10, monochrome: false)
+        XCTAssertEqual(original.film?["evFilm"]?.number, 0, "A cancelled draft leaves the source unchanged.")
+        var edited = original
+        draft.apply(to: &edited)
+        let normalized = try await engine.normalize(edited)
+        for key in original.fields.keys where key != "film" { XCTAssertEqual(normalized.fields[key], original.fields[key], key) }
+        for key in try XCTUnwrap(original.film).keys where !["evFilm", "grainParams", "halationParams"].contains(key) {
+            XCTAssertEqual(normalized.film?[key], original.film?[key], key)
+        }
+        let grain = try XCTUnwrap(normalized.film?["grainParams"]?.object)
+        XCTAssertEqual(grain["rmsGranularity"], .array([.integer(7), .integer(10), .integer(13)]))
+        XCTAssertEqual(grain["blur"], original.film?["grainParams"]?.object?["blur"])
+        let halation = try XCTUnwrap(normalized.film?["halationParams"]?.object)
+        for key in ["scatterAmount", "boostEv", "protectEv"] {
+            XCTAssertEqual(halation[key], original.film?["halationParams"]?.object?[key])
+        }
+        draft = FilmDraft(recipe: original, defaults: try XCTUnwrap(defaults.film))
+        draft.setGrainOffset(4, channel: 1)
+        edited = original
+        draft.apply(to: &edited)
+        let offsetRecipe = try await engine.normalize(edited)
+        XCTAssertEqual(offsetRecipe.film?["grainParams"]?.object?["rmsGranularity"], .array([.integer(5), .integer(12), .integer(11)]))
+        draft = FilmDraft(recipe: offsetRecipe, defaults: try XCTUnwrap(defaults.film))
+        draft.resetEffect("grain")
+        draft.apply(to: &edited)
+        let resetRecipe = try await engine.normalize(edited)
+        XCTAssertEqual(resetRecipe.film?["grainParams"], defaults.film?["grainParams"])
+        draft = FilmDraft(recipe: original, defaults: try XCTUnwrap(defaults.film))
+        draft.setGrainBase(9, monochrome: true)
+        XCTAssertEqual(draft.grainRMS, [9, 8, 11], "Monochrome editing keeps inactive channel calibration.")
+    }
+
+    func testFilmDraftAutoResetLegacyAndDisabledState() async throws {
+        let engine = EngineWorker()
+        let defaults = try await engine.normalize(EditSettings())
+        let filmDefaults = try XCTUnwrap(defaults.film)
+        var recipe = try await engine.normalize(EditSettings(canonicalJSON: """
+        {"seed":4321,"film":{"film":4,"evPaper":1,"grainParams":null,"halationParams":null,
+        "grainAmount":2,"halationSizeRgb":[45,55,65],"couplersRadius":0.004}}
+        """))
+        let original = recipe
+        var draft = FilmDraft(recipe: recipe, defaults: filmDefaults)
+        XCTAssertFalse(draft.hasNative("grain"))
+        draft.set("evPaper", .null)
+        XCTAssertTrue(draft.autoPaper)
+        draft.apply(to: &recipe)
+        recipe = try await engine.normalize(recipe)
+        XCTAssertEqual(recipe.film?["evPaper"], .null)
+        XCTAssertEqual(recipe.film?["grainParams"], .null)
+        draft = FilmDraft(recipe: recipe, defaults: filmDefaults)
+        draft.resetEffect("grain")
+        draft.apply(to: &recipe)
+        recipe = try await engine.normalize(recipe)
+        XCTAssertNotNil(recipe.film?["grainParams"]?.object)
+        XCTAssertEqual(recipe.film?["halationParams"], .null)
+        draft = FilmDraft(recipe: recipe, defaults: filmDefaults)
+        draft.set("evFilm", .number(2))
+        draft.reset()
+        draft.apply(to: &recipe)
+        recipe = try await engine.normalize(recipe)
+        for key in ["film", "couplersRadius", "grainAmount", "halationSizeRgb"] { XCTAssertEqual(recipe.film?[key], original.film?[key], key) }
+        XCTAssertEqual(recipe.fields["seed"], original.fields["seed"])
+        XCTAssertEqual(recipe.film?["evFilm"], filmDefaults["evFilm"])
+        XCTAssertEqual(recipe.film?["grainParams"], filmDefaults["grainParams"])
+        var disabled = try await engine.normalize(EditSettings(canonicalJSON: "{\"film\":null,\"seed\":4321}"))
+        let disabledOriginal = disabled
+        draft = FilmDraft(recipe: disabled, defaults: filmDefaults)
+        XCTAssertFalse(draft.isEnabled)
+        draft.set("evFilm", .number(1)); draft.resetEffect("grain"); draft.reset(); draft.apply(to: &disabled)
+        XCTAssertEqual(disabled, disabledOriginal)
+    }
+
     func testCropMappingAndPresetsAtEveryRotation() {
         let crop = CropRect(x: 0.2, y: 0.15, width: 0.5, height: 0.6)
         let expected = [crop, CropRect(x: 0.25, y: 0.2, width: 0.6, height: 0.5),

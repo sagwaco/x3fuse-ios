@@ -42,6 +42,24 @@ the selected band or wheel. Reset HSL clears all bands. Reset grading also resto
 blending to 50 and balance to 0. Monochrome sources and monochrome film hide these
 color effects; the app shows a notice and keeps the values in the recipe.
 
+Use Advanced film after enabling Film. The sheet controls film exposure, paper,
+automatic or manual paper exposure, direct negative scan, film and paper gamma,
+filtration, couplers, grain, and halation. Apply saves the draft; Cancel discards it.
+Paper exposure uses the renderer value: positive values darken the print. Gamma is
+a multiplier, and filtration uses the stored values. These units differ from the
+desktop contrast and brightness sliders. Direct negative scan hides print controls.
+Monochrome film hides filtration and couplers, matching the desktop UI; stored
+couplers still affect monochrome rendering.
+
+Native grain controls include RMS granularity, channel offsets, blur, and sharpening.
+Halation controls include scatter and halation amounts/scales, highlight boost,
+boost range, and protection. Imported legacy effect settings remain active until
+Use native controls is selected. This replaces that effect block with native defaults
+and retains the legacy fields. Reset advanced film controls uses the catalog defaults
+while keeping the film stock, calibration fields, and random seed. It does not use
+stock-specific effect presets. A grain base cannot move when its channel offsets
+already span the full range; the individual offsets remain editable.
+
 Detail and noise reduction includes intensity, NLM/BM3D, luminance/chroma switches,
 strength, and sharpening. Noise sliders apply on release because changes prepare
 the RAW again. Accessibility adjustments apply without a drag. Advanced noise
@@ -110,7 +128,9 @@ change and records its recipe, dimensions, time, and memory. The combined edit t
 includes normalization and RAW preparation. An HSL and grading preview runs after
 the first preview, before exports and the denoise change, and records its exact
 recipe and wall time. For this color check only, a monochrome source uses Standard
-with monochrome disabled.
+with monochrome disabled. An advanced film, grain, and halation preview also runs
+before exports with source-default denoise and the same color-source adjustment.
+Its exact canonical recipe, dimensions, wall time, and memory sample are recorded.
 This does not change the saved photo edits. The report records background and
 memory-warning cancellations. It samples physical footprint every 50 ms.
 These samples are a lower bound on peak memory.
@@ -122,8 +142,9 @@ Processing timings do not measure tap latency or display frame rate.
 
 The current app covers X3F/X3I import, browsing, local edits, desktop sidecar exchange,
 light and color controls, HSL, color grading, film stocks, crop/rotation, curves,
-noise reduction, and JPEG/TIFF/DNG export. Remaining work includes advanced film
-controls, DNG import, metadata parity, larger libraries, and measured UI latency. Original TIFF conversion is not included.
+noise reduction, advanced film controls, and JPEG/TIFF/DNG export. Remaining work
+includes DNG import, metadata parity, larger libraries, and measured UI latency.
+Original TIFF conversion is not included.
 
 While cropping, the draft hides existing straightening. Apply restores it; the
 straightened output fits inside the selected rectangle. Reset crop restores the
