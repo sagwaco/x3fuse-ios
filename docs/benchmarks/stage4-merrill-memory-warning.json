@@ -1,0 +1,54 @@
+{
+  "availableMemoryBeforeExportBytes" : 2341845808,
+  "benchmarkCancellationEvents" : [
+    "memoryWarning"
+  ],
+  "device" : "iPad",
+  "dngExportFilename" : "DP2M0643-AEA7F055-C33F-47AB-9B17-78CE476F4DCB.dng",
+  "dngExportMilliseconds" : 2914.606041,
+  "dngWarnings" : [
+
+  ],
+  "error" : "The operation couldn’t be completed. (Swift.CancellationError error 1.)",
+  "exportFilename" : "DP2M0643-4EB4890C-CE9B-4B15-BC80-3C1BD445BF16.jpg",
+  "exportMilliseconds" : 555.78187500000001,
+  "filmEnabled" : false,
+  "filmRecipeJSON" : "{\"version\":1,\"cameraProfile\":\"Monochrome\",\"exposure\":0.0,\"temperature\":null,\"tint\":0.0,\"contrast\":0.0,\"highlights\":0.0,\"shadows\":0.0,\"whites\":0.0,\"blacks\":0.0,\"fillLight\":0.0,\"saturation\":0.0,\"vibrance\":0.0,\"curves\":{\"master\":[{\"x\":0.0,\"y\":0.0},{\"x\":1.0,\"y\":1.0}],\"red\":[{\"x\":0.0,\"y\":0.0},{\"x\":1.0,\"y\":1.0}],\"green\":[{\"x\":0.0,\"y\":0.0},{\"x\":1.0,\"y\":1.0}],\"blue\":[{\"x\":0.0,\"y\":0.0},{\"x\":1.0,\"y\":1.0}]},\"hsl\":[{\"hue\":0.0,\"saturation\":0.0,\"luminance\":0.0},{\"hue\":0.0,\"saturation\":0.0,\"luminance\":0.0},{\"hue\":0.0,\"saturation\":0.0,\"luminance\":0.0},{\"hue\":0.0,\"saturation\":0.0,\"luminance\":0.0},{\"hue\":0.0,\"saturation\":0.0,\"luminance\":0.0},{\"hue\":0.0,\"saturation\":0.0,\"luminance\":0.0},{\"hue\":0.0,\"saturation\":0.0,\"luminance\":0.0},{\"hue\":0.0,\"saturation\":0.0,\"luminance\":0.0}],\"denoise\":10,\"denoiseOptions\":{\"algorithm\":\"nlm\",\"luminance\":false,\"chroma\":true,\"strength\":1.0,\"nlm\":{\"lumaPatch\":3,\"chromaPatch\":3,\"lumaSearch\":11,\"chromaSearch\":11}},\"sharpen\":50.0,\"crop\":{\"x\":0.0,\"y\":0.0,\"width\":1.0,\"height\":1.0},\"rotation\":0,\"straighten\":0.0,\"pitch\":0.0,\"yaw\":0.0,\"monochrome\":{\"filter\":\"neutral\"},\"film\":{\"film\":2,\"paper\":3,\"negative\":false,\"evFilm\":0.0,\"evPaper\":null,\"couplers\":0.25,\"couplersRadius\":0.0015,\"grain\":true,\"grainParams\":{\"rmsGranularity\":[4.5,4.5,4.5],\"blur\":0.7,\"multUsmAmount\":1.5},\"grainSize\":1.0,\"grainAmount\":1.0,\"grainRoughness\":0.0,\"grainSaturation\":1.0,\"halation\":false,\"halationParams\":{\"scatterAmount\":1.0,\"scatterSpatialScale\":1.0,\"halationAmount\":1.0,\"halationSpatialScale\":1.0,\"boostEv\":0.0,\"boostRange\":0.3,\"protectEv\":4.0},\"halationStrength\":0.35,\"halationRadius\":0.0015,\"halationMidtones\":0.0,\"scatterSizeRgb\":[9.3,9.7,9.1],\"scatterStrengthRgb\":[0.78,0.65,0.67],\"halationSizeRgb\":[65.0,65.0,65.0],\"halationStrengthRgb\":[0.015,0.005,0.0],\"gammaFilm\":1.0,\"gammaPaper\":1.0,\"tuneM\":0.0,\"tuneY\":0.0},\"effects\":null,\"seed\":640223471}",
+  "filmRenderMilliseconds" : 437.31204100000002,
+  "filmStockIndex" : 2,
+  "filmStockKey" : "kodak_portra_400",
+  "finishedAt" : "2026-10-30T05:45:11Z",
+  "fixture" : "DP2M0643.X3F",
+  "importMilliseconds" : 53.618915999999999,
+  "jpegExportFilename" : "DP2M0643-4EB4890C-CE9B-4B15-BC80-3C1BD445BF16.jpg",
+  "jpegExportMilliseconds" : 555.78187500000001,
+  "jpegWarnings" : [
+
+  ],
+  "memoryAfterExportBytes" : 609666184,
+  "memoryAfterFilmBytes" : 727680232,
+  "memoryAfterImportBytes" : 20366184,
+  "memoryAfterRenderBytes" : 664405200,
+  "memorySampleIntervalMilliseconds" : 50,
+  "prepareMilliseconds" : 2798.29675,
+  "previewHeight" : 1024,
+  "previewMaxEdge" : 1536,
+  "previewWidth" : 1536,
+  "renderMilliseconds" : 208.67337499999999,
+  "renderVersion" : 20,
+  "sampledPeakPhysicalFootprintBytes" : 1075774984,
+  "schemaVersion" : 1,
+  "sidecarFilename" : "DEEC6E1B-745C-424B-8E17-15CEF3358303\/DP2M0643.X3F.x3fuse.json",
+  "sidecarRoundTripMatches" : true,
+  "sidecarRoundTripMilliseconds" : 247.02083300000001,
+  "sourceRevision" : "262908effd729341bc064f84b1507b9d4edc15bbda3ae40cbf0de3d5fa9db192",
+  "startedAt" : "2026-10-30T05:45:01Z",
+  "status" : "error",
+  "systemVersion" : "26.5.2",
+  "tiffExportFilename" : "DP2M0643-2C67F357-7557-4D78-B077-9C6FB57B1FA4.tif",
+  "tiffExportMilliseconds" : 2008.8184160000001,
+  "tiffWarnings" : [
+
+  ],
+  "timingScope" : "Pipeline wall time; UI latency is not measured"
+}

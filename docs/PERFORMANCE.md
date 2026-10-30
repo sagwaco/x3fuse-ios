@@ -120,3 +120,56 @@ curve validation and output, denoise re-preparation, cancellation recovery, and
 deterministic restoration of prior settings. The renderer and C ABI did not change
 in this stage. Reports are in `docs/benchmarks/stage3-merrill.json` and
 `stage3-quattro.json`.
+
+## Stage 4 HSL and color grading
+
+Twenty-four Release simulator unit tests passed. The iPad mini and iPhone 17
+simulator UI suites passed both the color and crop/curve tests. Color checks cover
+wheel drag, draft Cancel, Apply, and saved values after backgrounding and relaunch.
+Screenshots were checked on both layouts. The first color UI test compared decimal
+strings exactly; the corrected test allows 0.001 for the stored f32 value.
+
+Host engine tests used the Quattro and an as-shot Monochrome Merrill fixture.
+They cover recipe ranges, wheel direction, blending/balance output, remembered hue,
+sidecar preservation, and deterministic restoration. Monochrome recipes, film, and
+RAW channel mixes keep color values but suppress their effect. The native sheets
+show a notice and remain editable; desktop hides those controls. Native Reset
+grading resets the whole section, including blending and balance. Desktop Reset
+wheels resets only the three wheels. The renderer, C ABI, and framework did not
+change in this stage.
+
+Three initial Merrill combined runs were cancelled before the new color step.
+The diagnostic run completed JPEG, TIFF, DNG, sidecar, and film checks, then received
+an iOS memory warning during the denoise change. The user confirmed that the app
+stayed unlocked in the foreground. That report records `memoryWarning` and a
+sampled peak of 1076 MB. The earlier two reports had no event diagnostic, so their
+cancellation causes remain unknown. An initial Quattro combined run passed, with
+a 37 ms color step after the denoise change and a sampled peak of 1266 MB.
+
+These results do not establish a fixed process memory threshold or a leak. The
+old RAW scene is released before re-preparation. System pressure can still cancel
+processing. The app keeps cancellation and session release on memory warnings.
+Reports include all three cancelled runs and the initial Quattro run under
+`docs/benchmarks/stage4-*`.
+
+The final benchmark measures color immediately after the first preview, before
+exports and denoise changes. It uses source-default denoise and sets Standard plus
+`monochrome: null` for the Merrill color check only. This is a different workload
+from the initial Quattro color measurement. Exact recipes and timings remain in
+the reports. A later failure still gives the full run status `error`; a completed
+color timing alone does not mean the full run passed.
+
+The final signed Release runs on 2026-10-29 both completed the full benchmark with
+status `ok`, exact sidecar equality, and no cancellation events:
+
+| Fixture | Color preview ms | Color preview size | Sampled peak MB, full run |
+| --- | ---: | --- | ---: |
+| Merrill DP2M0643 | 31 | 1536 by 1024 | 1130 |
+| Quattro DP0Q0010 | 41 | 1536 by 659 | 1269 |
+
+Both use source-default denoise 10. Timings include recipe normalization and a
+warm preview render, with the RAW already prepared. They do not measure tap latency.
+Reports are `stage4-merrill.json` and `stage4-quattro.json`. These successful runs
+do not show that system memory pressure is resolved. The earlier failures remain
+part of the evidence. The last UI runs preceded only benchmark diagnostics and
+measurement-order changes; all 24 unit tests passed again after those changes.

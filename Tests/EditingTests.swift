@@ -151,6 +151,87 @@ final class EditingTests: XCTestCase {
         for key in original.fields.keys where key != "denoise" && key != "denoiseOptions" { XCTAssertEqual(normalized.fields[key], original.fields[key], key) }
     }
 
+    func testColorDraftsPreserveUntouchedValuesAndMetadata() throws {
+        var bands = Array(repeating: JSONValue.object(["hue": .number(0), "saturation": .number(0), "luminance": .number(0)]), count: 8)
+        bands[0] = .object(["hue": .number(12), "tag": .string("keep")])
+        var recipe = EditSettings()
+        recipe.fields["hsl"] = .array(bands)
+        recipe.fields["wheels"] = .object(["tag": .string("keep"), "shadows": .object(["x": .number(0.2), "y": .number(0.3), "hue": .number(1), "tag": .string("keep")])])
+        let original = recipe.fields
+        var hsl = HSLDraft(recipe: recipe)
+        hsl.bands[0].saturation = 25
+        hsl.apply(to: &recipe)
+        if case .array(let edited) = recipe.fields["hsl"] {
+            XCTAssertEqual(edited[0].object?["tag"], .string("keep"))
+            XCTAssertEqual(edited[0].object?["hue"], .number(12))
+            XCTAssertEqual(Array(edited.dropFirst()), Array(bands.dropFirst()))
+        } else { XCTFail("Missing HSL bands") }
+        var grading = GradingDraft(recipe: recipe)
+        grading.wheels[.shadows]?.luminance = 15
+        grading.apply(to: &recipe)
+        let shadow = recipe.fields["wheels"]?.object?["shadows"]?.object
+        XCTAssertEqual(shadow?["hue"], .number(1))
+        XCTAssertEqual(shadow?["tag"], .string("keep"))
+        XCTAssertEqual(recipe.fields["wheels"]?.object?["tag"], .string("keep"))
+        XCTAssertEqual(original["hsl"], .array(bands), "Drafts must leave their source unchanged.")
+    }
+
+    func testWheelMappingRememberedHueAndUnitDiscBoundaries() async throws {
+        var wheel = GradingWheel()
+        wheel.setHue(90)
+        XCTAssertEqual(wheel.strength, 0)
+        wheel.setStrength(100)
+        XCTAssertEqual(wheel.x, 0, accuracy: 0.0001)
+        XCTAssertEqual(wheel.y, 1, accuracy: 0.0001)
+        wheel.setStrength(0)
+        XCTAssertEqual(wheel.degrees, 90, accuracy: 0.01)
+        var remembered = EditSettings()
+        var rememberedDraft = GradingDraft(recipe: remembered)
+        rememberedDraft.wheels[.shadows] = wheel
+        rememberedDraft.apply(to: &remembered)
+        let rememberedRecipe = try await EngineWorker().normalize(remembered)
+        XCTAssertEqual(GradingDraft(recipe: rememberedRecipe).wheels[.shadows]?.degrees ?? 0, 90, accuracy: 0.01)
+        wheel.setStrength(50)
+        XCTAssertEqual(wheel.y, 0.5, accuracy: 0.0001)
+        let engine = EngineWorker()
+        for degree in 0...360 {
+            wheel.setHue(Double(degree)); wheel.setStrength(100)
+            XCTAssertLessThanOrEqual(hypot(wheel.x, wheel.y), 1.0001)
+            var recipe = EditSettings()
+            var grading = GradingDraft(recipe: recipe)
+            grading.wheels[.shadows] = wheel
+            grading.apply(to: &recipe)
+            _ = try await engine.normalize(recipe)
+        }
+        wheel.move(x: 3, y: -4)
+        XCTAssertEqual(wheel.x, 0.6)
+        XCTAssertEqual(wheel.y, -0.8)
+        wheel.move(x: .nan, y: 0)
+        XCTAssertEqual(wheel.x, 0.6)
+    }
+
+    func testColorSectionResetsNormalizeToDefaults() async throws {
+        let engine = EngineWorker()
+        var recipe = try await engine.normalize(EditSettings())
+        var hsl = HSLDraft(recipe: recipe)
+        hsl.bands[0].hue = 50; hsl.bands[1].saturation = -40
+        hsl.apply(to: &recipe)
+        var grading = GradingDraft(recipe: recipe)
+        XCTAssertEqual(grading.blending, 50)
+        grading.wheels[.shadows]?.setHue(200)
+        grading.wheels[.shadows]?.setStrength(40)
+        grading.blending = 75
+        grading.apply(to: &recipe)
+        recipe = try await engine.normalize(recipe)
+        hsl = HSLDraft(recipe: recipe); hsl.reset(.red); hsl.apply(to: &recipe)
+        XCTAssertEqual(HSLDraft(recipe: recipe).bands[1].saturation, -40)
+        hsl = HSLDraft(recipe: recipe); hsl.reset(); hsl.apply(to: &recipe)
+        grading = GradingDraft(recipe: recipe); grading.reset(); grading.apply(to: &recipe)
+        let reset = try await engine.normalize(recipe)
+        let defaults = try await engine.normalize(EditSettings())
+        XCTAssertEqual(reset.canonicalJSON, defaults.canonicalJSON)
+    }
+
     private func assertCrop(_ actual: CropRect, _ expected: CropRect, accuracy: Double = 1e-9, file: StaticString = #filePath, line: UInt = #line) {
         XCTAssertEqual(actual.x, expected.x, accuracy: accuracy, file: file, line: line)
         XCTAssertEqual(actual.y, expected.y, accuracy: accuracy, file: file, line: line)

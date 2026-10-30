@@ -34,6 +34,14 @@ draft until Apply; Cancel leaves saved edits unchanged. Rotate left or right in
 quarter turns. The curve editor supports master, red, green, and blue channels.
 Add, move, or remove points with touch or the point controls.
 
+Use HSL to change hue, saturation, and luminance for eight color bands. Color grading
+has separate shadows, midtones, and highlights wheels, plus blending and balance.
+Drag a wheel or use its hue, strength, and luminance controls. These sheets keep a
+draft until Apply; Cancel discards the draft. Reset band or Reset wheel changes only
+the selected band or wheel. Reset HSL clears all bands. Reset grading also restores
+blending to 50 and balance to 0. Monochrome sources and monochrome film hide these
+color effects; the app shows a notice and keeps the values in the recipe.
+
 Detail and noise reduction includes intensity, NLM/BM3D, luminance/chroma switches,
 strength, and sharpening. Noise sliders apply on release because changes prepare
 the RAW again. Accessibility adjustments apply without a drag. Advanced noise
@@ -99,7 +107,12 @@ renders a preview, and exports JPEG, TIFF, and DNG. It also checks a sidecar rou
 trip and renders one film preview. The report records each export time and the
 exact film recipe. It then renders a combined crop, rotation, curve, and denoise
 change and records its recipe, dimensions, time, and memory. The combined edit time
-includes normalization and RAW preparation. It samples physical footprint every 50 ms.
+includes normalization and RAW preparation. An HSL and grading preview runs after
+the first preview, before exports and the denoise change, and records its exact
+recipe and wall time. For this color check only, a monochrome source uses Standard
+with monochrome disabled.
+This does not change the saved photo edits. The report records background and
+memory-warning cancellations. It samples physical footprint every 50 ms.
 These samples are a lower bound on peak memory.
 
 See [performance checks](docs/PERFORMANCE.md) for the fixture matrix and baseline.
@@ -108,8 +121,8 @@ Processing timings do not measure tap latency or display frame rate.
 ## Remaining migration
 
 The current app covers X3F/X3I import, browsing, local edits, desktop sidecar exchange,
-light and color controls, film stocks, crop/rotation, curves, noise reduction, and
-JPEG/TIFF/DNG export. Remaining work includes HSL, color wheels, advanced film
+light and color controls, HSL, color grading, film stocks, crop/rotation, curves,
+noise reduction, and JPEG/TIFF/DNG export. Remaining work includes advanced film
 controls, DNG import, metadata parity, larger libraries, and measured UI latency. Original TIFF conversion is not included.
 
 While cropping, the draft hides existing straightening. Apply restores it; the

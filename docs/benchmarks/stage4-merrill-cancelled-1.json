@@ -1,0 +1,38 @@
+{
+  "availableMemoryBeforeExportBytes" : 2342370144,
+  "device" : "iPad",
+  "error" : "The operation couldn’t be completed. (Swift.CancellationError error 1.)",
+  "exportFilename" : "DP2M0643-AF7B0315-F101-4DDB-A689-95747FB7AF66.jpg",
+  "exportMilliseconds" : 536.20429200000001,
+  "filmEnabled" : false,
+  "finishedAt" : "2026-10-30T05:38:51Z",
+  "fixture" : "DP2M0643.X3F",
+  "importMilliseconds" : 30.051542000000001,
+  "jpegExportFilename" : "DP2M0643-AF7B0315-F101-4DDB-A689-95747FB7AF66.jpg",
+  "jpegExportMilliseconds" : 536.20429200000001,
+  "jpegWarnings" : [
+
+  ],
+  "memoryAfterExportBytes" : 607650952,
+  "memoryAfterImportBytes" : 18662224,
+  "memoryAfterRenderBytes" : 663897248,
+  "memorySampleIntervalMilliseconds" : 50,
+  "prepareMilliseconds" : 2703.6377499999999,
+  "previewHeight" : 1024,
+  "previewMaxEdge" : 1536,
+  "previewWidth" : 1536,
+  "renderMilliseconds" : 215.82429200000001,
+  "renderVersion" : 20,
+  "sampledPeakPhysicalFootprintBytes" : 929908136,
+  "schemaVersion" : 1,
+  "sourceRevision" : "262908effd729341bc064f84b1507b9d4edc15bbda3ae40cbf0de3d5fa9db192",
+  "startedAt" : "2026-10-30T05:38:44Z",
+  "status" : "error",
+  "systemVersion" : "26.5.2",
+  "tiffExportFilename" : "DP2M0643-4255F1BA-914E-442E-B2F5-1F43B1A8CD96.tif",
+  "tiffExportMilliseconds" : 1938.635833,
+  "tiffWarnings" : [
+
+  ],
+  "timingScope" : "Pipeline wall time; UI latency is not measured"
+}

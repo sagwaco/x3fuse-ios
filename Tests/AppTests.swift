@@ -3,6 +3,40 @@ import XCTest
 
 final class AppTests: XCTestCase {
     @MainActor
+    func testResetEditsClearsCanonicalColorAdjustments() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let asset = ImportedAsset(id: UUID(), name: "photo.x3f", sourceName: "source.x3f", importedAt: Date())
+        try FileManager.default.createDirectory(at: root.appendingPathComponent(asset.id.uuidString), withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let engine = HeldEngine()
+        let model = AppModel(library: AssetLibrary(store: AssetStore(root: root)), worker: engine)
+        model.assets = [asset]; model.select(asset.id)
+        try await waitUntil { engine.renderedSettings.count == 1 }
+        engine.completeRender()
+        try await waitUntil { model.frame != nil && !model.isRendering }
+        var recipe = model.settings
+        var hsl = HSLDraft(recipe: recipe)
+        hsl.bands[0].hue = 40; hsl.apply(to: &recipe)
+        var grading = GradingDraft(recipe: recipe)
+        grading.wheels[.shadows]?.setHue(120)
+        grading.wheels[.shadows]?.setStrength(30)
+        grading.apply(to: &recipe)
+        let canonical = try await engine.normalize(recipe)
+        model.changeSettings { $0 = canonical }
+        try await waitUntil { engine.renderedSettings.count == 2 }
+        model.resetEdits()
+        let reset = try await engine.normalize(model.settings)
+        XCTAssertEqual(reset.canonicalJSON, model.imageInfo?.defaultRecipe.canonicalJSON)
+        XCTAssertNil(reset.fields["wheels"])
+        engine.completeRender()
+        try await waitUntil { engine.renderedSettings.count == 3 }
+        engine.completeRender()
+        try await waitUntil { !model.isRendering }
+        model.enterBackground()
+        try await Task.sleep(for: .milliseconds(30))
+    }
+
+    @MainActor
     func testDenoiseReleaseQueuesOnceAndOnlyNewDenoiseCancelsPreparation() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let asset = ImportedAsset(id: UUID(), name: "photo.x3f", sourceName: "source.x3f", importedAt: Date())

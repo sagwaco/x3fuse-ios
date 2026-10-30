@@ -107,6 +107,8 @@ private struct EditorView: View {
     @State private var pendingSidecar: URL?
     @State private var sidecarAssetID: UUID?
     @State private var editingCurves = false
+    @State private var editingHSL = false
+    @State private var editingGrading = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -135,6 +137,11 @@ private struct EditorView: View {
                                 .accessibilityLabel("Rotate right").accessibilityIdentifier("editor.rotateRight")
                             Spacer()
                             Button("Curves") { editingCurves = true }.accessibilityIdentifier("editor.curves")
+                        }
+                        HStack {
+                            Button("HSL") { editingHSL = true }.accessibilityIdentifier("editor.hsl")
+                            Spacer()
+                            Button("Color grading") { editingGrading = true }.accessibilityIdentifier("editor.grading")
                         }
                         control("Exposure", value: Binding(get: { model.settings.exposure }, set: { value in model.changeSettings { $0.exposure = value } }),
                                 range: -5...5, step: 0.1, display: String(format: "%+.1f EV", model.settings.exposure))
@@ -208,6 +215,12 @@ private struct EditorView: View {
         }
         .sheet(isPresented: $editingCurves) {
             if let sourceID = model.selectedID { CurveEditor(model: model, sourceID: sourceID, recipe: model.settings) }
+        }
+        .sheet(isPresented: $editingHSL) {
+            if let sourceID = model.selectedID { HSLEditor(model: model, sourceID: sourceID, recipe: model.settings) }
+        }
+        .sheet(isPresented: $editingGrading) {
+            if let sourceID = model.selectedID { GradingEditor(model: model, sourceID: sourceID, recipe: model.settings) }
         }
         .fileImporter(isPresented: $importingSidecar, allowedContentTypes: [.json], allowsMultipleSelection: false) { result in
             switch result {

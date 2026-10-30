@@ -25,6 +25,7 @@ final class AppModel: ObservableObject {
     private var renderingNoise: DenoiseSettings?
     private var selectionRevision: UInt64 = 0
     private var disabledFilm: [String: JSONValue]?
+    private var benchmarkCancellationEvents: [String] = []
 
     let library: AssetLibrary
     let worker: any ImageEngine
@@ -148,6 +149,7 @@ final class AppModel: ObservableObject {
     }
 
     func enterBackground() {
+        if isBenchmarking { benchmarkCancellationEvents.append("background") }
         setActive(false)
         flushEdits()
         requests.cancel()
@@ -155,6 +157,7 @@ final class AppModel: ObservableObject {
     }
 
     func memoryWarning() {
+        if isBenchmarking { benchmarkCancellationEvents.append("memoryWarning") }
         requests.cancel()
         worker.releaseSession()
         frame = nil
@@ -374,6 +377,7 @@ final class AppModel: ObservableObject {
     }
 
     private func runBenchmark() async {
+        benchmarkCancellationEvents = []
         isBenchmarking = true
         let wasIdleTimerDisabled = UIApplication.shared.isIdleTimerDisabled
         UIApplication.shared.isIdleTimerDisabled = true
@@ -412,6 +416,33 @@ final class AppModel: ObservableObject {
             report["previewWidth"] = result.frame.width
             report["previewHeight"] = result.frame.height
             report["memoryAfterRenderBytes"] = MemorySampler.footprint()
+            // Measure color before exports increase memory pressure.
+            status = "Benchmark: HSL and color grading…"
+            var colorRecipe = settings
+            if colorRecipe.hasMonochromeColorSource {
+                colorRecipe.fields["cameraProfile"] = .string("Standard")
+                colorRecipe.fields["monochrome"] = .null
+            }
+            var hsl = HSLDraft(recipe: colorRecipe)
+            hsl.bands[HSLBand.red.rawValue].hue = 20
+            hsl.bands[HSLBand.blue.rawValue].saturation = 30
+            hsl.bands[HSLBand.green.rawValue].luminance = 15
+            hsl.apply(to: &colorRecipe)
+            var grading = GradingDraft(recipe: colorRecipe)
+            grading.wheels[.shadows]?.setHue(220)
+            grading.wheels[.shadows]?.setStrength(15)
+            grading.wheels[.highlights]?.setHue(40)
+            grading.wheels[.highlights]?.setStrength(10)
+            grading.blending = 65; grading.balance = -10
+            grading.apply(to: &colorRecipe)
+            let colorStart = ContinuousClock.now
+            let color = try await worker.render(asset: asset, settings: colorRecipe)
+            report["colorRenderMilliseconds"] = colorStart.millisecondsToNow
+            report["colorRenderTimingScope"] = "Recipe normalization and preview render wall time; source-default denoise unchanged"
+            report["colorRecipeJSON"] = color.recipe.canonicalJSON
+            report["colorPreviewWidth"] = color.frame.width
+            report["colorPreviewHeight"] = color.frame.height
+            report["memoryAfterColorBytes"] = MemorySampler.footprint()
             status = "Benchmark: exporting…"
             for format in ExportFormat.allCases {
                 let exported = try await worker.export(asset: asset, settings: settings, format: format)
@@ -470,6 +501,7 @@ final class AppModel: ObservableObject {
             status = "Benchmark failed. See Documents/Benchmarks/report.json."
             message = error.localizedDescription
         }
+        report["benchmarkCancellationEvents"] = benchmarkCancellationEvents
         report["sampledPeakPhysicalFootprintBytes"] = sampler.stop()
         report["finishedAt"] = ISO8601DateFormatter().string(from: Date())
         do { try await library.writeBenchmarkReport(report) }

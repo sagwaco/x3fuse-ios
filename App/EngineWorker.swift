@@ -35,6 +35,7 @@ struct FilmStock: Decodable, Identifiable {
     let index: Int
     let key: String
     let name: String
+    let monochrome: Bool?
     var id: Int { index }
 }
 
