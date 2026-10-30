@@ -111,6 +111,11 @@ private struct EditorView: View {
     @State private var editingGrading = false
     @State private var editingFilm = false
 
+    private var largeDNG: Bool {
+        guard model.selectedAsset?.isDNG == true, let info = model.imageInfo else { return false }
+        return !info.canExportFullResolution
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             ZStack {
@@ -127,6 +132,16 @@ private struct EditorView: View {
                         if model.currentEdits == nil && !model.selectionLoading {
                             Button("Reload") { model.select(model.selectedID) }
                         }
+                    }
+                    if let info = model.imageInfo, info.isProxy {
+                        Text("Editing a reduced preview of the \(info.width) × \(info.height) image.")
+                            .font(.caption).foregroundStyle(.secondary)
+                            .accessibilityIdentifier("editor.previewSource")
+                    }
+                    if largeDNG {
+                        Text("You can edit and save recipes. JPEG and TIFF export for images above 24 MP is not available yet.")
+                            .font(.caption).foregroundStyle(.secondary)
+                            .accessibilityIdentifier("editor.exportLimit")
                     }
                     VStack(spacing: 14) {
                         HStack {
@@ -214,8 +229,8 @@ private struct EditorView: View {
         .toolbar {
             Menu {
                 Section("Rendered image") {
-                    Button("JPEG") { model.export(.jpeg) }
-                    Button("16-bit TIFF (sRGB)") { model.export(.tiff) }
+                    Button("JPEG") { model.export(.jpeg) }.disabled(largeDNG)
+                    Button("16-bit TIFF (sRGB)") { model.export(.tiff) }.disabled(largeDNG)
                 }
                 if model.selectedAsset?.isDNG != true {
                     Section("Original RAW") {

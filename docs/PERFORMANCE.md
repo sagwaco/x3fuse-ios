@@ -312,3 +312,75 @@ The initial simulator UI attempt rejected decoding because simulator
 memory for its estimate; device memory checks and the 24 MP cap remain unchanged.
 The physical runtime also lacked the SDK's despeckle capability selector, so optional
 Apple adjustment capabilities are checked before calling their getters/setters.
+
+
+## Stage 8 preview-based DNG editing
+
+DNG editing now decodes a preview with a maximum edge of 3072 pixels. Stored and
+active RAW geometry is bounded to 100 MP. Normalized edits retain the logical
+original dimensions for crop, grain, and effect scale. Full-resolution JPEG/TIFF
+export reopens the original only when both stored and logical dimensions fit the
+24 MP limit. Proxy buffers cannot be exported by the engine. Larger inputs can
+be edited and saved, with export disabled in the UI.
+
+The physical iPad mini 6 (iPadOS 26.5.2, build 23F84, decoder 8.dng) completed five
+fixture workflows using the production EngineWorker and AssetStore. Each imported
+a copy, prepared a preview, rendered crop/rotation/exposure and film edits, saved
+and reopened the native recipe, and verified the original source hash.
+
+| Input | Logical dimensions, oriented | Prepare ms | Edited render ms | Film render ms | Sampled peak bytes |
+| --- | --- | ---: | ---: | ---: | ---: |
+| Leica L1003185.DNG | 5200×7864 | 4438.84 | 957.90 | 458.93 | 837,076,416 |
+| Synthetic 60 MP LinearRaw | 6000×10000 | 4610.77 | 65.10 | 279.01 | 1,430,112,352 |
+| Synthetic 60 MP Bayer | 10000×6000 | 1690.39 | 47.46 | 233.70 | 936,658,368 |
+| Merrill DNG | 4704×3136 | 1776.45 | 58.74 | 248.52 | 983,090,696 |
+| Small cropped orientation-6 DNG | 400×480 | 82.61 | 3.18 | 50.11 | 517,555,432 |
+
+All three large inputs rejected JPEG and TIFF export. Merrill exports retained
+4704×3136 dimensions; JPEG and TIFF rendering plus encoding took 646.55 and 2373.22 ms respectively.
+These render-plus-encode timings exclude the preceding full-resolution reopen. A subsequent
+prepare/render returned to the proxy path. The small cropped file also exported
+at its native dimensions. Full measurements are in the
+[preview workflow report](benchmarks/stage8-apple-preview.json).
+
+These are single-run wall times and sampled process footprints, not tap latency
+or app-under-pressure guarantees. The temporary harness uses the real worker and
+asset storage but does not install AppModel's memory-warning observer. The normal
+app still cancels on memory warnings. Apple's internal decoding allocations are
+not bounded by the scaled output estimate; the 1.43 GB LinearRaw peak demonstrates
+that a smaller output buffer does not guarantee a small total footprint.
+
+An additional physical spatial check used a nonzero active origin and an odd
+3601×2401 default crop, decoded to 3072×2049. Corner and interior colors matched
+within 0.001; transitions at (1536, 1076) matched expected crop positions within
+one pixel. See the [spatial report](benchmarks/stage8-apple-spatial.json). The same
+spatial pattern passed on macOS for all eight EXIF orientations.
+
+Physical preview and spatial reports used AppleRAW.swift SHA-256
+`33a8c5e41bebdec466e69bf45da83d3370e21f3144edb1083c8911613d5c5348`.
+The final helper hash is
+`d258a130a10548a750bc352b779dcb6ef61b9ce6259db8fcc5f2447281166173`.
+The intervening change only adds Swift export-availability metadata for the
+stored-sensor cap; pixel decoding, ABI, recipe schema, and decoder identity are
+unchanged. That metadata change and its UI use passed the final checks below.
+
+Validation:
+
+- 52 Release Swift unit tests passed, including decoder selection, preview plans,
+  geometry bounds, alpha normalization, full reopen checks, and the stored-25-MP /
+  cropped-20-MP export restriction.
+- Nine Rust library tests, FFI checks, formatting, and Clippy passed. Optional
+  external FFI fixture branches were skipped. Three isolated geometry tests
+  covered original coordinates and scaled sampling. The full vendor unit suite
+  could not run because its upstream external film JSON fixture paths are absent.
+- A temporary GPU comparison used full 1537×1025 and proxy 769×513 inputs at a
+  shared 384-pixel output, with orientation, crop, rotation, perspective, detail,
+  halation, and grain. All comparisons differed by at most one RGBA8 level, with
+  mean difference at most 0.01155. Detail and halation changed 316,852 and 68,581
+  bytes from their baseline, so the test exercised active effects.
+- Final iPad and iPhone simulator DNG suites each passed both tests: small-file
+  editing/JPEG export/persistence and real Leica preview editing/export limits/
+  non-default edit persistence after background/termination/relaunch.
+- Device and simulator frameworks rebuilt successfully; final signed app build
+  and independent review completed. Full-resolution export above 24 MP remains
+  deferred, and no memory-pressure fix is claimed.

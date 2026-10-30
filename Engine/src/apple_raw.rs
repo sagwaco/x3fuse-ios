@@ -9,6 +9,10 @@ use x3f_core::{SceneLinearImage, WhiteBalanceCalibration};
 struct Metadata {
     width: u32,
     height: u32,
+    #[serde(default)]
+    original_width: Option<u32>,
+    #[serde(default)]
+    original_height: Option<u32>,
     orientation: u16,
     source_revision: String,
     decoder_identity: String,
@@ -131,6 +135,15 @@ pub unsafe extern "C" fn x3f_session_open_apple_raw(
             .checked_mul(m.height as usize)
             .filter(|&n| n > 0 && n <= 24_000_000)
             .ok_or_else(|| invalid("Apple RAW dimensions exceed 24 MP"))?;
+        let original = match (m.original_width, m.original_height) {
+            (None, None) => (m.width, m.height),
+            (Some(w), Some(h))
+                if w >= m.width && h >= m.height && u64::from(w) * u64::from(h) <= 100_000_000 =>
+            {
+                (w, h)
+            }
+            _ => return Err(invalid("Invalid Apple RAW original dimensions")),
+        };
         if m.width == 0
             || m.height == 0
             || !(1..=8).contains(&m.orientation)
@@ -208,7 +221,12 @@ pub unsafe extern "C" fn x3f_session_open_apple_raw(
             seed: u32::from_str_radix(&m.source_revision[..8], 16).unwrap_or(0),
             ..Default::default()
         };
-        let size = x3f_render::output_dimensions(prepared.image(), &default)?;
+        let size = if (5..=8).contains(&m.orientation) {
+            (original.1, original.0)
+        } else {
+            original
+        };
+        let logical_dimensions = (original != (m.width, m.height)).then_some(original);
         let session = Session {
             path: path.into(),
             kind: Kind::Dng,
@@ -221,6 +239,7 @@ pub unsafe extern "C" fn x3f_session_open_apple_raw(
             prepared: Some(prepared),
             stamp,
             decoder_identity: Some(m.decoder_identity),
+            logical_dimensions,
         };
         session.check_recipe(&session.default)?;
         // SAFETY: out was checked and owns the new session after return.
@@ -291,6 +310,153 @@ mod tests {
     }
     fn rgba() -> Vec<f32> {
         [0.1, 0.2, 0.4, 1.].repeat(4)
+    }
+
+    #[test]
+    fn full_and_reduced_render_keep_effect_geometry() {
+        let f = Fixture::new("effects");
+        let mut meta = f.metadata();
+        meta["width"] = json!(63);
+        meta["height"] = json!(47);
+        meta["orientation"] = json!(6);
+        let mut full = f
+            .open(&[0.1, 0.2, 0.4, 1.].repeat(63 * 47), meta.clone())
+            .unwrap();
+        meta["originalWidth"] = json!(63);
+        meta["originalHeight"] = json!(47);
+        meta["width"] = json!(32);
+        meta["height"] = json!(24);
+        let mut proxy = f.open(&[0.1, 0.2, 0.4, 1.].repeat(32 * 24), meta).unwrap();
+        let recipe = EditRecipe {
+            rotation: 1,
+            straighten: 7.,
+            pitch: 9.,
+            yaw: -4.,
+            crop: Some(Crop {
+                x: 0.13,
+                y: 0.21,
+                width: 0.67,
+                height: 0.53,
+            }),
+            effects: Some(x3f_render::EffectsSettings {
+                grain: true,
+                halation: true,
+                ..Default::default()
+            }),
+            ..full.default.clone()
+        };
+        let json = edits::canonical(&recipe);
+        let options = RenderOptions {
+            max_dimension: Some(12),
+            rgba8: true,
+            ..Default::default()
+        };
+        let cancel = AtomicBool::new(false);
+        let a = full.render_with(&json, options, &cancel).unwrap();
+        let b = proxy.render_with(&json, options, &cancel).unwrap();
+        let baseline = full
+            .render_with(
+                &edits::canonical(&EditRecipe {
+                    effects: None,
+                    ..recipe.clone()
+                }),
+                options,
+                &cancel,
+            )
+            .unwrap();
+        assert_ne!(a.data, baseline.data);
+        assert_eq!(
+            (a.width, a.height, a.full_width, a.full_height),
+            (b.width, b.height, b.full_width, b.full_height)
+        );
+        let (Pixels::Rgba8(a), Pixels::Rgba8(b)) = (a.data, b.data) else {
+            panic!("Expected previews")
+        };
+        assert_eq!(&a[..FRAME_HEADER], &b[..FRAME_HEADER]);
+        assert!(a[FRAME_HEADER..]
+            .iter()
+            .zip(&b[FRAME_HEADER..])
+            .all(|(a, b)| a.abs_diff(*b) <= 1));
+    }
+
+    #[test]
+    fn proxy_metadata_documents_and_export_contract() {
+        let f = Fixture::new("proxy");
+        let full = f.open(&rgba(), f.metadata()).unwrap();
+        let doc = edits::new_document(&full.revision, full.default.clone(), 1, 0).unwrap();
+        let mut doc = doc;
+        doc.version = 3;
+        doc.decoder_identity = full.decoder_identity.clone();
+        assert!(full.logical_dimensions.is_none());
+        for orientation in 1..=8 {
+            let mut meta = f.metadata();
+            meta["originalWidth"] = json!(9503);
+            meta["originalHeight"] = json!(6337);
+            meta["orientation"] = json!(orientation);
+            let mut proxy = f.open(&rgba(), meta).unwrap();
+            assert_eq!(proxy.decoder_identity, full.decoder_identity);
+            assert!(proxy.document(&doc.to_json()).is_ok());
+            let info: Value = serde_json::from_str(&proxy.info().unwrap()).unwrap();
+            let expected = if orientation < 5 {
+                (9503, 6337)
+            } else {
+                (6337, 9503)
+            };
+            assert_eq!(
+                (
+                    info["width"].as_u64().unwrap(),
+                    info["height"].as_u64().unwrap()
+                ),
+                expected
+            );
+            assert_eq!(info["isProxy"], true);
+            let path = std::env::temp_dir()
+                .join(format!("apple-proxy-{}-{orientation}", std::process::id()));
+            let cancel = AtomicBool::new(false);
+            assert_eq!(
+                proxy
+                    .export_jpeg("{}", &path, 90, true, &cancel)
+                    .unwrap_err()
+                    .0,
+                X3F_ERR_UNSUPPORTED
+            );
+            assert_eq!(
+                proxy
+                    .export_tiff("{}", &path, Default::default(), false, true, &cancel)
+                    .unwrap_err()
+                    .0,
+                X3F_ERR_UNSUPPORTED
+            );
+            assert!(!path.exists());
+            fs::write(&path, b"preserve").unwrap();
+            assert!(proxy.export_jpeg("{}", &path, 90, true, &cancel).is_err());
+            assert!(proxy
+                .export_tiff("{}", &path, Default::default(), false, true, &cancel)
+                .is_err());
+            assert_eq!(fs::read(&path).unwrap(), b"preserve");
+            fs::remove_file(path).unwrap();
+        }
+        for (w, h) in [
+            (Some(4), None),
+            (None, Some(4)),
+            (Some(1), Some(4)),
+            (Some(10001), Some(10000)),
+            (Some(0), Some(0)),
+        ] {
+            let mut meta = f.metadata();
+            if let Some(w) = w {
+                meta["originalWidth"] = json!(w);
+            }
+            if let Some(h) = h {
+                meta["originalHeight"] = json!(h);
+            }
+            assert_eq!(f.open(&rgba(), meta).err(), Some(X3F_ERR_INVALID));
+        }
+        let mut meta = f.metadata();
+        meta["originalWidth"] = json!(2);
+        meta["originalHeight"] = json!(2);
+        let full = f.open(&rgba(), meta).unwrap();
+        assert!(full.check_full_resolution().is_ok());
     }
 
     #[test]

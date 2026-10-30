@@ -1,0 +1,115 @@
+[
+  {
+    "decoderIdentity" : "apple-raw-v1:Version_26.5.2_(Build_23F84):8.dng:default-crop-v1",
+    "file" : "L1003185.DNG",
+    "filmRenderMs" : 458.92833300000001,
+    "height" : 7864,
+    "isProxy" : true,
+    "jpegRejection" : "JPEG and TIFF export is unavailable for DNG images above 24 megapixels. You can edit and save a reduced preview. Full-resolution export is planned.",
+    "peakFootprint" : 837076416,
+    "persistence" : true,
+    "prepareMs" : 4438.8396249999996,
+    "preview" : [
+      1536,
+      1094
+    ],
+    "renderMs" : 957.89504199999999,
+    "sourceRevision" : "03e4ccf7c303c3f3fb8ad9f89b47a0868bc3b1772a33d316bca30a9795151c3b",
+    "sourceUnchanged" : true,
+    "status" : "ok",
+    "tiffRejection" : "JPEG and TIFF export is unavailable for DNG images above 24 megapixels. You can edit and save a reduced preview. Full-resolution export is planned.",
+    "width" : 5200
+  },
+  {
+    "decoderIdentity" : "apple-raw-v1:Version_26.5.2_(Build_23F84):8.dng",
+    "file" : "preview-60mp-linear.dng",
+    "filmRenderMs" : 279.00858399999998,
+    "height" : 10000,
+    "isProxy" : true,
+    "jpegRejection" : "JPEG and TIFF export is unavailable for DNG images above 24 megapixels. You can edit and save a reduced preview. Full-resolution export is planned.",
+    "peakFootprint" : 1430112352,
+    "persistence" : true,
+    "prepareMs" : 4610.769542,
+    "preview" : [
+      1536,
+      992
+    ],
+    "renderMs" : 65.103958000000006,
+    "sourceRevision" : "4eccc9ce873b34c827eaaf4361afcde7a1a5d1ff7b29ae258e7efa9c6be26779",
+    "sourceUnchanged" : true,
+    "status" : "ok",
+    "tiffRejection" : "JPEG and TIFF export is unavailable for DNG images above 24 megapixels. You can edit and save a reduced preview. Full-resolution export is planned.",
+    "width" : 6000
+  },
+  {
+    "decoderIdentity" : "apple-raw-v1:Version_26.5.2_(Build_23F84):8.dng",
+    "file" : "preview-60mp-bayer.dng",
+    "filmRenderMs" : 233.704083,
+    "height" : 6000,
+    "isProxy" : true,
+    "jpegRejection" : "JPEG and TIFF export is unavailable for DNG images above 24 megapixels. You can edit and save a reduced preview. Full-resolution export is planned.",
+    "peakFootprint" : 936658368,
+    "persistence" : true,
+    "prepareMs" : 1690.3914580000001,
+    "preview" : [
+      856,
+      1536
+    ],
+    "renderMs" : 47.459625000000003,
+    "sourceRevision" : "a46b3774cbd0fc7d43aa1b883aacc1d29672a0b6037b2acd66cfce7428551b64",
+    "sourceUnchanged" : true,
+    "status" : "ok",
+    "tiffRejection" : "JPEG and TIFF export is unavailable for DNG images above 24 megapixels. You can edit and save a reduced preview. Full-resolution export is planned.",
+    "width" : 10000
+  },
+  {
+    "decoderIdentity" : "apple-raw-v1:Version_26.5.2_(Build_23F84):8.dng",
+    "file" : "merrill.dng",
+    "filmRenderMs" : 248.52312499999999,
+    "height" : 3136,
+    "isProxy" : true,
+    "jpegHeight" : 3136,
+    "jpegMs" : 646.551875,
+    "jpegWidth" : 4704,
+    "peakFootprint" : 983090696,
+    "persistence" : true,
+    "prepareMs" : 1776.4510420000001,
+    "preview" : [
+      951,
+      1536
+    ],
+    "renderMs" : 58.744166,
+    "sourceRevision" : "de223a987fc9db45b067603bcff6e9998016551f1e86946a52fb321db4f96dc0",
+    "sourceUnchanged" : true,
+    "status" : "ok",
+    "tiffHeight" : 3136,
+    "tiffMs" : 2373.2215000000001,
+    "tiffWidth" : 4704,
+    "width" : 4704
+  },
+  {
+    "decoderIdentity" : "apple-raw-v1:Version_26.5.2_(Build_23F84):8.dng:default-crop-v1",
+    "file" : "linear-geometry-o6.dng",
+    "filmRenderMs" : 50.110458000000001,
+    "height" : 480,
+    "isProxy" : false,
+    "jpegHeight" : 480,
+    "jpegMs" : 19.651917000000001,
+    "jpegWidth" : 400,
+    "peakFootprint" : 517555432,
+    "persistence" : true,
+    "prepareMs" : 82.614290999999994,
+    "preview" : [
+      312,
+      280
+    ],
+    "renderMs" : 3.1810839999999998,
+    "sourceRevision" : "fd07c1ccb55f32b516e6eea11ef0542a008daabd20275d70b808522a1cb105f8",
+    "sourceUnchanged" : true,
+    "status" : "ok",
+    "tiffHeight" : 480,
+    "tiffMs" : 16.065874999999998,
+    "tiffWidth" : 400,
+    "width" : 400
+  }
+]

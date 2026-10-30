@@ -53,8 +53,45 @@ final class DNGSmokeTests: XCTestCase {
         add(attachment)
     }
 
-    private func openEditor(_ app: XCUIApplication) {
-        let cell = app.cells.containing(.staticText, identifier: "accepted-linear-o1.dng").firstMatch
+    func testLargeDNGPreviewAndSavedEdits() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launch()
+        openEditor(app, name: "L1003185.DNG")
+        let exposure = app.sliders["Exposure"]
+        reveal(exposure, app)
+        waitEnabled(exposure)
+        XCTAssertFalse(app.alerts.firstMatch.exists)
+        XCTAssertTrue(app.staticTexts["editor.previewSource"].exists)
+        XCTAssertTrue(app.staticTexts["editor.exportLimit"].exists)
+        let original = exposure.value as? String
+        exposure.adjust(toNormalizedSliderPosition: original?.hasPrefix("+") == true ? 0.4 : 0.6)
+        let saved = exposure.value as? String
+        XCTAssertNotEqual(original, saved)
+        let export = app.buttons["Export and recipes"]
+        waitEnabled(export)
+        export.tap()
+        XCTAssertTrue(app.buttons["JPEG"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["JPEG"].isEnabled)
+        XCTAssertFalse(app.buttons["16-bit TIFF (sRGB)"].isEnabled)
+        app.tap()
+        XCUIDevice.shared.press(.home)
+        XCTAssertTrue(app.wait(for: .runningBackground, timeout: 10))
+        app.terminate()
+        app.launch()
+        openEditor(app, name: "L1003185.DNG")
+        reveal(exposure, app)
+        waitEnabled(exposure)
+        XCTAssertEqual(exposure.value as? String, saved)
+        XCTAssertFalse(app.alerts.firstMatch.exists)
+        let attachment = XCTAttachment(screenshot: app.screenshot())
+        attachment.name = "Large DNG preview and saved edits"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
+    private func openEditor(_ app: XCUIApplication, name: String = "accepted-linear-o1.dng") {
+        let cell = app.cells.containing(.staticText, identifier: name).firstMatch
         if !cell.waitForExistence(timeout: 3), app.sliders["Exposure"].exists {
             app.navigationBars.buttons.firstMatch.tap()
         }

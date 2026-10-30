@@ -87,15 +87,24 @@ bool x3f_cancel_is_set(const X3fCancel *cancel);
  * It contains exactly width * height * 4 initialized, aligned floats, tightly
  * packed, top-down, extended-linear sRGB. RGB must be finite; alpha must be 1.
  * Keep negative and above-one RGB. Force decode orientation up; pass the source
- * EXIF orientation separately. Pixels must cover the full active area and have
+ * EXIF orientation separately. Pixels must cover the native default-cropped frame and have
  * as-shot WB and file BaselineExposure applied exactly once. Swift must validate
  * DNG crop, scale, active area and decoder settings before this call.
- * metadata_json has exactly: width:u32, height:u32, orientation:1..8,
+ * metadata_json requires: width:u32, height:u32, orientation:1..8,
  * sourceRevision:lowercase file SHA256, decoderIdentity:apple-raw-v1:<OS/build>:<decoder>,
  * baselineExposure:finite number (evidence only), asShotTemperature:positive f32.
  * Identity is printable ASCII without spaces, at most 256 bytes, with nonempty
  * OS/build and decoder fields. Encode OS spaces as underscores.
- * No unknown keys. Maximum 24,000,000 pixels. The engine copies RGB, checks the
+ * Append :default-crop-v1 for default-crop or implicit-geometry interpretation.
+ * Preserve the exact existing identity for explicit full-area interpretation.
+ * Optional paired originalWidth/originalHeight:u32 give the unscaled, un-oriented
+ * default-cropped frame size, not the sensor active frame size;
+ * omit both for full buffers. Source size must cover the decoded dimensions
+ * and be at most 100,000,000 pixels. Decoded buffers are at most 24,000,000 pixels.
+ * Reduced buffers cover the same default-cropped frame. Identity must not include scale.
+ * Session info width/height give oriented original size; isProxy marks reduction.
+ * JPEG/TIFF export from reduced buffers is unsupported. Reopen full pixels first.
+ * No unknown keys. The engine copies RGB, checks the
  * source hash and stable stamp, and does not retain rgba. out is NULL on error.
  * DNG sessions require denoise=0, default denoiseOptions, as-shot WB and no
  * Foveon controls or explicit dngDemosaic. Sigma DNG export is unavailable.

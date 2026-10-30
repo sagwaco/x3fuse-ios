@@ -75,10 +75,24 @@ impl Geometry {
                 "Preview dimensions must be positive".into(),
             ));
         }
+        let (source_width, source_height) = options
+            .logical_dimensions
+            .unwrap_or((image.width, image.height));
+        if source_width < image.width
+            || source_height < image.height
+            || image.width == 0
+            || image.height == 0
+        {
+            return Err(RenderError::Invalid(
+                "Invalid logical source dimensions".into(),
+            ));
+        }
+        let source_scale = (image.width as f32 / source_width as f32)
+            .min(image.height as f32 / source_height as f32);
         let (w, h) = if (5..=8).contains(&image.orientation) {
-            (image.height, image.width)
+            (source_height, source_width)
         } else {
-            (image.width, image.height)
+            (source_width, source_height)
         };
         let crop = r.crop.unwrap_or_default();
         let cw = (w as f32 * crop.width).round().max(1.);
@@ -92,7 +106,7 @@ impl Geometry {
         let region_long = (nw * region.width).max(nh * region.height);
         let factor = options
             .max_dimension
-            .map_or(1., |m| (m as f32 / region_long).min(1.));
+            .map_or(source_scale, |m| (m as f32 / region_long).min(source_scale));
         let fw = (nw * factor).round().max(1.) as u32;
         let fh = (nh * factor).round().max(1.) as u32;
         let x = (region.x * fw as f32).floor() as u32;
@@ -122,6 +136,14 @@ impl Geometry {
             crop_height: ch,
             homography: perspective(r.pitch, r.yaw, w as f64, h as f64),
         })
+    }
+    pub fn native_output_dimensions(&self) -> (u32, u32) {
+        let size = (self.crop_width as u32, self.crop_height as u32);
+        if self.rotation % 2 == 1 {
+            (size.1, size.0)
+        } else {
+            size
+        }
     }
     /// Long edge of the whole sensor frame at this render's scale. Physical
     /// film parameters key off this, so cropping or requesting a region never
@@ -272,6 +294,91 @@ pub(crate) fn sample(image: &SceneLinearImage, x: f32, y: f32) -> [f32; 3] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reduced_source_keeps_original_geometry_and_grain() {
+        let mut original = SceneLinearImage {
+            width: 9503,
+            height: 6337,
+            orientation: 1,
+            data: Vec::new(),
+            white_balance: x3f_core::WhiteBalanceCalibration {
+                camera_to_rgb: [1., 0., 0., 0., 1., 0., 0., 0., 1.],
+                xyz_to_camera: [1., 0., 0., 0., 1., 0., 0., 0., 1.],
+                as_shot_neutral: [1.; 3],
+            },
+            color_mode_calibration: None,
+        };
+        for orientation in 1..=8 {
+            original.orientation = orientation;
+            let reduced = SceneLinearImage {
+                width: 3072,
+                height: 2049,
+                orientation,
+                data: Vec::new(),
+                white_balance: original.white_balance.clone(),
+                color_mode_calibration: None,
+            };
+            for rotation in 0..4 {
+                let recipe = EditRecipe {
+                    rotation,
+                    straighten: 13.,
+                    pitch: 11.,
+                    yaw: -7.,
+                    crop: Some(Crop {
+                        x: 0.13,
+                        y: 0.21,
+                        width: 0.67,
+                        height: 0.53,
+                    }),
+                    ..Default::default()
+                };
+                let options = RenderOptions {
+                    max_dimension: Some(640),
+                    ..Default::default()
+                };
+                let full = Geometry::new(&original, &recipe, options).unwrap();
+                let proxy = Geometry::new(
+                    &reduced,
+                    &recipe,
+                    RenderOptions {
+                        logical_dimensions: Some((original.width, original.height)),
+                        ..options
+                    },
+                )
+                .unwrap();
+                assert_eq!((full.width, full.height), (proxy.width, proxy.height));
+                assert_eq!(
+                    full.native_output_dimensions(),
+                    proxy.native_output_dimensions()
+                );
+                assert_eq!(full.grain_transform(), proxy.grain_transform());
+                assert_eq!(full.scale, proxy.scale);
+                assert_eq!(full.long_edge(), proxy.long_edge());
+                let a = full.source_transform(&original);
+                let b = proxy.source_transform(&reduced);
+                for (row, ratio) in [
+                    (0, reduced.width as f32 / original.width as f32),
+                    (1, reduced.height as f32 / original.height as f32),
+                ] {
+                    for col in 0..3 {
+                        let expected = a[row][col] * ratio + 0.5 * (ratio - 1.) * a[2][col];
+                        assert!((b[row][col] - expected).abs() < 0.001);
+                    }
+                }
+            }
+            let proxy = Geometry::new(
+                &reduced,
+                &EditRecipe::default(),
+                RenderOptions {
+                    logical_dimensions: Some((original.width, original.height)),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            assert!(proxy.width.max(proxy.height) <= 3072);
+        }
+    }
 
     /// Pitch, yaw, size, picture quad, forward of (1234, 2345), inverse of (1000, 500).
     type Reference = (f32, f32, u32, u32, [[f64; 2]; 4], [f64; 2], [f64; 2]);

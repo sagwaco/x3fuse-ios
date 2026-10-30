@@ -61,6 +61,8 @@ struct ImageInfo {
     let prepareMilliseconds: Double
     var cameraProfiles: [CameraProfile] = []
     var decoderIdentity: String? = nil
+    var isProxy = false
+    var canExportFullResolution = true
 }
 
 protocol ImageEngine: Sendable {
@@ -91,6 +93,7 @@ final class EngineWorker: ImageEngine, @unchecked Sendable {
     private var epoch: UInt64 = 0
     private var enabled = true
     private var session: OpaquePointer?
+    private var sessionMode: AppleRAW.DecodeMode?
     private var sourceID: UUID?
     private var info: [String: Any] = [:]
 
@@ -131,7 +134,9 @@ final class EngineWorker: ImageEngine, @unchecked Sendable {
                              catalog: try JSONDecoder().decode(FilmCatalog.self, from: Data(catalogJSON.utf8)),
                              prepareMilliseconds: elapsed,
                              cameraProfiles: try JSONDecoder().decode([CameraProfile].self, from: profiles),
-                             decoderIdentity: self.info["decoderIdentity"] as? String)
+                             decoderIdentity: self.info["decoderIdentity"] as? String,
+                             isProxy: self.info["isProxy"] as? Bool ?? false,
+                             canExportFullResolution: self.info["canExportFullResolution"] as? Bool ?? true)
         }
     }
 
@@ -164,7 +169,7 @@ final class EngineWorker: ImageEngine, @unchecked Sendable {
     func validateDocument(asset: ImportedAsset, json: String, previous: RecipeDocument?) async throws -> RecipeDocument {
         try await perform(allowInactiveValidation: true) { token in
             guard self.sourceID == asset.id || self.lock.withLock({ self.enabled }) else { throw CancellationError() }
-            try self.open(asset, token: token)
+            try self.open(asset, token: token, reuseAnyMode: true)
             var recipeJSON: UnsafeMutablePointer<CChar>?
             defer { x3f_string_free(recipeJSON) }
             let validated = try self.stringResult { output, error in
@@ -253,6 +258,16 @@ final class EngineWorker: ImageEngine, @unchecked Sendable {
         guard !asset.isDNG || format != .dng else { throw EngineFailure(message: "DNG conversion export is unavailable for Apple RAW sources.") }
         return try await perform { token in
             try self.open(asset, token: token)
+            let previewInfo = self.info
+            if asset.isDNG {
+                try AppleRAW.validateFullExport(width: self.info["width"] as? Int ?? 0,
+                                                height: self.info["height"] as? Int ?? 0)
+            }
+            defer { if asset.isDNG { self.clearSession() } }
+            if asset.isDNG {
+                try self.open(asset, token: token, mode: .full)
+                try Self.validateExportSource(preview: previewInfo, full: self.info)
+            }
             guard let session = self.session else { throw EngineFailure(message: "The image session is unavailable.") }
             let normalized = try self.normalizeNow(settings)
             let recipe = try normalized.json
@@ -301,19 +316,40 @@ final class EngineWorker: ImageEngine, @unchecked Sendable {
         }
     }
 
-    private func open(_ asset: ImportedAsset, token: OpaquePointer) throws {
-        if sourceID == asset.id { return }
+    static func validateExportSource(preview: [String: Any], full: [String: Any]) throws {
+        guard let revision = preview["sourceRevision"] as? String,
+              let identity = preview["decoderIdentity"] as? String,
+              let width = preview["width"] as? Int, let height = preview["height"] as? Int,
+              full["sourceRevision"] as? String == revision,
+              full["decoderIdentity"] as? String == identity,
+              full["width"] as? Int == width, full["height"] as? Int == height,
+              full["isProxy"] as? Bool == false else {
+            throw EngineFailure(message: "The DNG source or decoder changed since the preview. Reload the image before export.")
+        }
+    }
+
+    static func canReuseSession(current: AppleRAW.DecodeMode?, requested: AppleRAW.DecodeMode,
+                                reuseAnyMode: Bool) -> Bool {
+        current != nil && (reuseAnyMode || current == requested)
+    }
+
+    private func open(_ asset: ImportedAsset, token: OpaquePointer,
+                      mode: AppleRAW.DecodeMode = .preview, reuseAnyMode: Bool = false) throws {
+        if session != nil, sourceID == asset.id,
+           !asset.isDNG || Self.canReuseSession(current: sessionMode, requested: mode, reuseAnyMode: reuseAnyMode) { return }
         clearSession()
         let interval = AppMetrics.signposter.beginInterval("Prepare")
         defer { AppMetrics.signposter.endInterval("Prepare", interval) }
         var opened: OpaquePointer?
+        var canExportFullResolution = true
         do {
             let source = asset.sourceURL(in: AssetStore.application.root)
             if asset.isDNG {
                 try autoreleasepool {
-                    let decoded = try AppleRAW.decode(url: source, availableMemory: Self.rawDecodeMemoryBudget) {
+                    let decoded = try AppleRAW.decode(url: source, availableMemory: Self.rawDecodeMemoryBudget, mode: mode) {
                         if x3f_cancel_is_set(token) { throw CancellationError() }
                     }
+                    canExportFullResolution = decoded.canExportFullResolution
                     let metadata = String(decoding: try JSONEncoder().encode(decoded.metadata), as: UTF8.self)
                     try checked { error in
                         source.path.withCString { path in
@@ -341,7 +377,9 @@ final class EngineWorker: ImageEngine, @unchecked Sendable {
             }
             session = opened
             sourceID = asset.id
+            sessionMode = asset.isDNG ? mode : nil
             info = metadata
+            info["canExportFullResolution"] = canExportFullResolution
         } catch {
             x3f_session_free(opened)
             throw error
@@ -351,6 +389,7 @@ final class EngineWorker: ImageEngine, @unchecked Sendable {
     private func clearSession() {
         x3f_session_free(session)
         session = nil
+        sessionMode = nil
         sourceID = nil
         info = [:]
     }

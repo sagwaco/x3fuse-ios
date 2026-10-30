@@ -103,6 +103,8 @@ impl ColorProfile {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct RenderOptions {
     pub max_dimension: Option<u32>,
+    /// Original un-oriented dimensions when the source pixels are reduced.
+    pub logical_dimensions: Option<(u32, u32)>,
     pub region: Option<Crop>,
     pub color_profile: ColorProfile,
     /// Read back 8-bit RGBA packed on the GPU (previews) instead of 16-bit RGB (export).
@@ -1367,7 +1369,7 @@ impl Renderer {
         } = look;
         recipe.validate().map_err(RenderError::Invalid)?;
         let geom = geometry::Geometry::new(image, recipe, options)?;
-        let (full_width, full_height) = output_dimensions(image, recipe)?;
+        let (full_width, full_height) = geom.native_output_dimensions();
         let (width, height) = (geom.width, geom.height);
         // Preparing the pair is the expensive CPU step. The plan keeps its
         // tables through an Arc, so the lock is held only while planning.

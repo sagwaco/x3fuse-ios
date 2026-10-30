@@ -164,12 +164,15 @@ presentation and SFD merging need separate memory and timing evidence.
 
 The source uses GPL-3.0-only. Preserve the renderer attribution and bundled notices.
 
-DNG import uses Apple RAW with as-shot white balance and proven full active-area
-geometry, up to 24 MP. Non-full default/user crops and ambiguous geometry are rejected.
+DNG import uses Apple RAW with as-shot white balance and validated default-crop
+geometry. Editing uses a preview up to 3072 pixels on the longest edge, for stored
+images up to 100 MP. JPEG/TIFF export requires a full decode and remains limited
+to 24 MP; larger files can be edited and saved but cannot yet be exported.
+Non-full user crops and ambiguous geometry are rejected.
 DNG inputs support JPEG/TIFF export, but not DNG conversion or desktop sidecars.
 Saved edits require the same Apple decoder and OS build identity. See the
 [DNG support limits and validation](docs/APPLE_RAW.md).
 
 The DNG UI suite requires a copied supported full-area LinearRaw fixture named
-`accepted-linear-o1.dng` in the isolated test library. It checks exposure edits,
+`accepted-linear-o1.dng` and the Leica `L1003185.DNG` in the isolated test library. It checks exposure edits,
 film toggling, supported export choices, JPEG export, and persistence after relaunch.

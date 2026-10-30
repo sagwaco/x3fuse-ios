@@ -161,6 +161,7 @@ pub struct Session {
     /// The source file identity when it was hashed.
     stamp: Stamp,
     decoder_identity: Option<String>,
+    logical_dimensions: Option<(u32, u32)>,
 }
 
 /// Size, times and identity. A change means the hash must be read again.
@@ -245,6 +246,7 @@ impl Session {
             prepared: Some(prepared),
             stamp,
             decoder_identity: None,
+            logical_dimensions: None,
         })
     }
 
@@ -258,6 +260,7 @@ impl Session {
             "kind": match self.kind { Kind::X3f => "x3f", Kind::X3i => "x3i", Kind::Dng => "dng" },
             "width": width,
             "height": height,
+            "isProxy": self.logical_dimensions.is_some(),
             "asShotTemperature": temperature,
             "asShotTint": tint,
             "cameraProfiles": self.profiles.available,
@@ -448,9 +451,10 @@ impl Session {
     fn render_with(
         &mut self,
         json: &str,
-        options: RenderOptions,
+        mut options: RenderOptions,
         cancel: &AtomicBool,
     ) -> Result<x3f_render::RenderedImage> {
+        options.logical_dimensions = self.logical_dimensions;
         let recipe = self.recipe(json)?;
         if self.kind == Kind::Dng {
             self.check_source(cancel)?;
@@ -502,6 +506,16 @@ impl Session {
         Ok((frame, image.width, image.height))
     }
 
+    fn check_full_resolution(&self) -> Result<()> {
+        if self.logical_dimensions.is_some() {
+            return Err(Error(
+                X3F_ERR_UNSUPPORTED,
+                "Reopen the full-resolution source before export".into(),
+            ));
+        }
+        Ok(())
+    }
+
     pub fn export_jpeg(
         &mut self,
         json: &str,
@@ -510,6 +524,7 @@ impl Session {
         replace: bool,
         cancel: &AtomicBool,
     ) -> Result<()> {
+        self.check_full_resolution()?;
         if !(1..=100).contains(&quality) {
             return Err(invalid("JPEG quality must be 1..100"));
         }
@@ -534,6 +549,7 @@ impl Session {
         replace: bool,
         cancel: &AtomicBool,
     ) -> Result<()> {
+        self.check_full_resolution()?;
         let target = self.target(out)?;
         exists(&target, replace)?;
         let image = self.render_with(

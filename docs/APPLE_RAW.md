@@ -1,26 +1,33 @@
 # Apple RAW DNG import
 
-Stage 7 uses CIRAWFilter on a serial worker, then passes full-resolution linear RGB
-to the shared Rust renderer. No LibRaw dependency was added. The original DNG is
+CIRAWFilter runs on a serial worker and passes linear RGB to the shared Rust
+renderer. Stage 8 uses a preview with a longest edge of at most 3072 pixels for
+editing, preserving the original dimensions for crop and film effects. No LibRaw dependency was added. The original DNG is
 copied into a unique asset directory and is never changed.
 
 ## Supported subset
 
 - Classic TIFF DNG version 1.0 through 1.7, with one full-resolution CFA or LinearRaw IFD.
-- At most 24 million active pixels, with enough available process memory for the full decode.
-- Explicit valid ActiveArea. DefaultCrop must equal the full active area. Missing DefaultCrop is accepted only with zero active origin and matching native/output dimensions.
+- At most 100 million stored and active pixels for preview editing. Full-resolution export remains limited to 24 million stored and output pixels, with enough available process memory.
+- A valid ActiveArea, or the stored rectangle when ActiveArea is absent. Integer DefaultCrop origin and size must fit inside that area. Missing DefaultCrop is accepted only with zero active origin. The validated default crop defines the original editing frame.
 - DefaultUserCrop must be absent or full-frame. DefaultScale must be absent or [1, 1]. Ambiguous geometry is rejected.
 - As-shot white balance only. Custom temperature, tint, gains, demosaic modes, Sigma camera profiles, sensor monochrome, RAW denoise, and fill light are rejected. Film simulation and ordinary rendered-image adjustments remain available.
-- Full-resolution JPEG and 16-bit TIFF export. DNG conversion export and desktop sidecar exchange are unavailable for DNG inputs.
+- JPEG and 16-bit TIFF export reopen a full-resolution decode for supported files within the 24 MP limit. Larger-image export is disabled. The engine rejects proxy exports, so an enlarged preview can never become a full-resolution export. DNG conversion export and desktop sidecar exchange remain unavailable for DNG inputs.
 
 Geometry is read from the actual RAW IFD with a bounded TIFF parser. ImageIO can
 report thumbnail geometry while decoding a different RAW crop. The parser checks
 field types, counts, offsets, duplicate tags, graph cycles, and conflicting RAW images.
-Apple output dimensions must match the proven active area.
+Apple native dimensions at scale one must match the proven default crop. Scaled
+output must match the planned dimensions within integer rounding. A supported DNG
+decoder is selected explicitly if Apple initially chooses a camera-native decoder;
+an existing supported DNG decoder is retained.
 
 Decode forces orientation up, applies file BaselineExposure once, and retains
 original EXIF orientation for the Rust renderer. RGBA32f uses extended linear sRGB;
-finite negative values and values above one are retained. The borrowed C buffer is
+finite negative values and values above one are retained. Reduced output can have
+non-unit coverage alpha from resampling: finite positive alpha is unpremultiplied,
+then set to one, with finite RGB checked again. Full-size output still requires
+opaque alpha. The borrowed C buffer is
 validated and copied into owned RGB. Cancellation and source hashes are checked
 around the blocking Apple decode and bridge. An in-progress Apple decode cannot
 be interrupted inside the framework call.
@@ -29,9 +36,17 @@ Native DNG documents use inner schema 3 with an Apple bridge, OS build, and deco
 identity, inside the existing native schema 2 envelope. A changed identity rejects
 old edits without overwriting them. An OS update may therefore require a future
 explicit migration before old DNG edits can reopen. Sigma document behavior remains
-separate. No desktop LibRaw color or white-balance parity is claimed.
+separate. Newly accepted implicit-active-area or cropped files add
+`:default-crop-v1` to the identity. Preview dimensions are not stored in recipes.
+No desktop LibRaw color or white-balance parity is claimed.
 
-## Physical validation
+Preview memory estimates cover the output and bridge buffers. Apple can allocate
+additional internal decoding memory, so the pixel cap is not a guarantee that every
+100 MP file will open on every device. Export releases the preview before full
+decode, verifies source hash, decoder identity and original dimensions, and releases
+the full session on success or failure. The next edit reopens a preview.
+
+## Stage 7 physical validation (before preview editing)
 
 The iPad mini 6 on iPadOS 26.5.2, build 23F84, used decoder 8.dng.
 The final production-helper matrix had 63 cases: 29 accepted and 34 expected
@@ -118,3 +133,7 @@ Recommendation:
 Keep production deferred pending physical iOS26 evidence and crop contract decision. A possible future smallest subset is as-shot-WB-only, full-active-area decode: require finite validated ActiveArea; explicit DefaultCropOrigin[0,0]/Size equal active extent, or separately validated absent-crop/origin-zero case; full or absent user crop; unit DefaultScale; finite integral output extent exactly equal expected active dimensions after forcing up; reject anything ambiguous. Require source-specific checking of decoder version, metadata, data count, finite opaque pixels, source identity and memory budget. Reject unsupported WB/gains/picker and ALL explicit demosaic modes, not just hide UI.
 Metadata can express the needed equality on iOS, but the macOS probe cannot guarantee the iOS decoder honors it. Merrill meets the observed origin-zero/no-user-crop candidate; this Quattro does not meet the no-user-crop subset. Supporting user crop later requires correct normalized recipe mapping while keeping the desktop active-area coordinate system. Supporting already-baked nonfull default crops requires a larger coordinate/export contract; do not silently apply desktop crop twice.
 ```
+
+Stage 8 preview, spatial, export lifecycle, and memory measurements are recorded
+in [the performance report](PERFORMANCE.md#stage-8-preview-based-dng-editing), with
+raw reports and the exact helper source hashes used for physical validation.
