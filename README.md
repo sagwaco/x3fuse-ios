@@ -23,7 +23,7 @@ Node, Vite, and Tauri are not required. Rebuild the framework after engine chang
 
 ## Current workflow
 
-Import X3F or X3I files through Files. The app copies each file into a unique
+Import X3F, X3I, or supported DNG files through Files. The app copies each file into a unique
 Application Support asset directory. X3I uses the middle exposure. Originals
 remain unchanged. The library restores imported copies at launch.
 
@@ -75,13 +75,13 @@ edits are saved atomically in a versioned `native-edits.json` file. Version-1
 native settings migrate once against the source defaults. Unsupported, unreadable,
 or externally changed edit files are preserved.
 
-Import a desktop `.x3fuse.json` sidecar for the selected photo and confirm replacement
+For X3F/X3I, import a desktop `.x3fuse.json` sidecar for the selected photo and confirm replacement
 of the current edits. Its source hash must match. Export a sidecar to a unique folder
 under Documents/Exports with the exact original filename plus `.x3fuse.json`.
 Use Share or Files to copy it beside the matching desktop RAW. Imported files remain
 unchanged. X3I recipes that require merging are rejected on iOS.
 
-Export a full-resolution sRGB JPEG, rendered 16-bit sRGB TIFF, or Original DNG to
+Export a full-resolution sRGB JPEG, rendered 16-bit sRGB TIFF, or (for X3F/X3I) Original DNG to
 Documents/Exports, then use Share or Files. JPEG and TIFF include the edits. Original
 DNG does not bake edits. DNG uses the bundled lens corrections where supported and
 includes core EXIF metadata only. JPEG includes an ICC profile and baked orientation;
@@ -147,10 +147,10 @@ Processing timings do not measure tap latency or display frame rate.
 
 ## Remaining migration
 
-The current app covers X3F/X3I import, browsing, local edits, desktop sidecar exchange,
+The current app covers X3F/X3I and restricted Apple RAW DNG import, browsing, local edits, desktop sidecar exchange,
 light and color controls, HSL, color grading, film stocks, crop/rotation, curves,
 noise reduction, advanced film controls, and JPEG/TIFF/DNG export. Remaining work
-includes DNG import, metadata parity, larger libraries, and measured UI latency.
+includes broader DNG support, metadata parity, larger libraries, and measured UI latency.
 Original TIFF conversion is not included.
 
 While cropping, the draft hides existing straightening. Apply restores it; the
@@ -164,5 +164,12 @@ presentation and SFD merging need separate memory and timing evidence.
 
 The source uses GPL-3.0-only. Preserve the renderer attribution and bundled notices.
 
-Apple RAW DNG import remains deferred. See the [decoder evaluation](docs/APPLE_RAW.md)
-for the measured behavior and integration requirements.
+DNG import uses Apple RAW with as-shot white balance and proven full active-area
+geometry, up to 24 MP. Non-full default/user crops and ambiguous geometry are rejected.
+DNG inputs support JPEG/TIFF export, but not DNG conversion or desktop sidecars.
+Saved edits require the same Apple decoder and OS build identity. See the
+[DNG support limits and validation](docs/APPLE_RAW.md).
+
+The DNG UI suite requires a copied supported full-area LinearRaw fixture named
+`accepted-linear-o1.dng` in the isolated test library. It checks exposure edits,
+film toggling, supported export choices, JPEG export, and persistence after relaunch.

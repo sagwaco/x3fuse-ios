@@ -41,7 +41,7 @@ typedef enum {
     X3F_OK = 0,
     X3F_ERR_INVALID = 1,     /* Bad argument, recipe or document JSON, range. */
     X3F_ERR_UNSUPPORTED = 2, /* Not X3F or X3I middle exposure, X3I merge,
-                                or a document version newer than 2. */
+                                or an incompatible edit decoder/version. */
     X3F_ERR_CANCELLED = 3,
     X3F_ERR_GPU = 4,         /* No GPU, device lost, or app in background. */
     X3F_ERR_IO = 5,
@@ -79,6 +79,33 @@ X3fCancel *x3f_cancel_new(void);
 /* Requests cancel. A cancelled call returns X3F_ERR_CANCELLED. */
 void x3f_cancel_set(const X3fCancel *cancel);
 void x3f_cancel_free(X3fCancel *cancel);
+/* Returns false for NULL. Safe to call while another thread requests cancel. */
+bool x3f_cancel_is_set(const X3fCancel *cancel);
+
+/*
+ * Opens externally decoded Apple RAW DNG. Borrow rgba until this call returns.
+ * It contains exactly width * height * 4 initialized, aligned floats, tightly
+ * packed, top-down, extended-linear sRGB. RGB must be finite; alpha must be 1.
+ * Keep negative and above-one RGB. Force decode orientation up; pass the source
+ * EXIF orientation separately. Pixels must cover the full active area and have
+ * as-shot WB and file BaselineExposure applied exactly once. Swift must validate
+ * DNG crop, scale, active area and decoder settings before this call.
+ * metadata_json has exactly: width:u32, height:u32, orientation:1..8,
+ * sourceRevision:lowercase file SHA256, decoderIdentity:apple-raw-v1:<OS/build>:<decoder>,
+ * baselineExposure:finite number (evidence only), asShotTemperature:positive f32.
+ * Identity is printable ASCII without spaces, at most 256 bytes, with nonempty
+ * OS/build and decoder fields. Encode OS spaces as underscores.
+ * No unknown keys. Maximum 24,000,000 pixels. The engine copies RGB, checks the
+ * source hash and stable stamp, and does not retain rgba. out is NULL on error.
+ * DNG sessions require denoise=0, default denoiseOptions, as-shot WB and no
+ * Foveon controls or explicit dngDemosaic. Sigma DNG export is unavailable.
+ * DNG documents use native-only version 3 with decoderIdentity. Desktop version
+ * 1/2 documents are incompatible. Do not offer desktop sidecar exchange.
+ */
+X3fStatus x3f_session_open_apple_raw(const char *source_path, const float *rgba,
+                                    size_t float_count, const char *metadata_json,
+                                    const X3fCancel *cancel, X3fSession **out,
+                                    char **error);
 
 /*
  * Opens and prepares the RAW at path: X3F, or the middle exposure of X3I.
@@ -91,7 +118,8 @@ X3fStatus x3f_session_open(const char *path, const X3fCancel *cancel,
 /*
  * Writes owned JSON to *out_json:
  * {"sourceRevision": "<sha256 hex of the file>", "renderVersion": 20,
- *  "kind": "x3f" | "x3i",
+ *  "kind": "x3f" | "x3i" | "dng",
+ *  "decoderIdentity": null | "apple-raw-v1:<OS/build>:<decoder>",
  *  "width": u32, "height": u32,          oriented, before crop
  *  "asShotTemperature": f32, "asShotTint": f32,
  *  "cameraProfiles": [{"id": "Standard", "name": "Standard"}, ...],
@@ -157,9 +185,11 @@ X3fStatus x3f_film_catalog(char **out_json, char **error);
 /*
  * A document is {"version", "sourceRevision", "revision", "updatedMs",
  * "recipe"}, as the desktop writes it. The engine accepts versions 1 and 2,
- * up to 1 MiB.
+ * up to 1 MiB. DNG uses native-only version 3 with decoderIdentity; the session
+ * requires the same decoder identity. Version 1/2 documents are Sigma-only.
  *
- * Validates document_json for the session source and writes a version 2
+ * Validates document_json for the session source and writes a version 2 (Sigma)
+ * or version 3 (Apple RAW DNG)
  * document to *out_json and its canonical recipe to *out_recipe_json (can be
  * NULL; store these bytes, do not re-encode the recipe). *edited (can be NULL) is
  * false when the recipe is the camera defaults. A version 1 document that

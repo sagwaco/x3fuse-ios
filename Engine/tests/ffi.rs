@@ -746,8 +746,12 @@ unsafe fn stage2(
         status
     };
     assert_eq!(bad("not json"), X3F_ERR_INVALID);
+    let mut native_dng: serde_json::Value = serde_json::from_str(&on_disk).unwrap();
+    native_dng["version"] = serde_json::json!(3);
+    native_dng["decoderIdentity"] = serde_json::json!("apple-raw-v1:27.0_build:8.dng");
+    assert_eq!(bad(&native_dng.to_string()), X3F_ERR_UNSUPPORTED);
     assert_eq!(
-        bad(&on_disk.replace("\"version\": 2", "\"version\": 3")),
+        bad(&on_disk.replace("\"version\": 2", "\"version\": 4")),
         X3F_ERR_UNSUPPORTED
     );
     assert_eq!(

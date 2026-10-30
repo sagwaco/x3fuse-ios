@@ -3,6 +3,40 @@ import XCTest
 
 final class AppTests: XCTestCase {
     @MainActor
+    func testDisablingDNGMonochromeFilmKeepsRecipeValidAndIdentity() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let asset = ImportedAsset(id: UUID(), name: "photo.dng", sourceName: "source.dng", importedAt: Date())
+        try FileManager.default.createDirectory(at: root.appendingPathComponent(asset.id.uuidString), withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let engine = HeldEngine()
+        let model = AppModel(library: AssetLibrary(store: AssetStore(root: root)), worker: engine)
+        model.assets = [asset]
+        model.select(asset.id)
+        try await waitUntil { engine.renderedSettings.count == 1 }
+        engine.completeRender()
+        try await waitUntil { model.frame != nil && !model.isRendering }
+        model.selectFilm(20)
+        try await waitUntil { !model.isApplyingLook && model.settings.filmStock == 20 }
+        XCTAssertNotEqual(model.settings.fields["monochrome"], .null)
+        model.setFilmEnabled(false)
+        XCTAssertNil(model.settings.film)
+        XCTAssertEqual(model.settings.fields["monochrome"], .null)
+        let identity = try XCTUnwrap(model.currentEdits?.decoderIdentity)
+        XCTAssertEqual(model.currentEdits?.document.version, 3)
+        XCTAssertEqual(model.currentEdits?.document.decoderIdentity, identity)
+        let canonical = try await engine.normalize(model.settings)
+        let document = RecipeDocument(version: 3, sourceRevision: "test", recipe: canonical, decoderIdentity: identity)
+        _ = try await engine.validateDocument(asset: asset, json: document.json, previous: nil)
+        model.enterBackground()
+        try await waitUntil { (try? AssetStore(root: root).loadEdits(for: asset).data) != nil }
+        guard case .current(let saved) = try AssetStore(root: root).loadEdits(for: asset).content else { return XCTFail("Missing DNG edits.") }
+        XCTAssertNil(saved.document.recipe.film)
+        XCTAssertEqual(saved.document.recipe.fields["monochrome"], .null)
+        XCTAssertNoThrow(try saved.validateDecoder(identity))
+        engine.completeRender()
+    }
+
+    @MainActor
     func testFilmOffOnPreservesSavedFilmExactly() async throws {
         try await assertFilmRestoration(afterCamera: false)
     }
@@ -298,20 +332,31 @@ final class AppTests: XCTestCase {
     }
 
     func testImportKeepsSameNameFilesSeparateAndRejectsDirectories() throws {
+        try assertAtomicImport(fileExtension: "X3F")
+    }
+
+    func testDNGImportKeepsUniquePersistentCopiesAndOriginalUnchanged() throws {
+        try assertAtomicImport(fileExtension: "DNG")
+    }
+
+    private func assertAtomicImport(fileExtension: String) throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
-        let source = root.appendingPathComponent("photo.X3F")
+        let source = root.appendingPathComponent("photo.\(fileExtension)")
         try Data([1, 2, 3]).write(to: source)
         let store = AssetStore(root: root.appendingPathComponent("Assets"))
         let first = try store.importFile(source)
+        XCTAssertEqual(try Data(contentsOf: source), Data([1, 2, 3]))
+        XCTAssertEqual(first.sourceName, "source.\(fileExtension.lowercased())")
         try Data([4, 5, 6]).write(to: source)
         let second = try store.importFile(source)
+        XCTAssertEqual(try Data(contentsOf: source), Data([4, 5, 6]))
         XCTAssertNotEqual(first.id, second.id)
         XCTAssertEqual(try Data(contentsOf: first.sourceURL(in: store.root)), Data([1, 2, 3]))
         XCTAssertEqual(try Data(contentsOf: second.sourceURL(in: store.root)), Data([4, 5, 6]))
         XCTAssertEqual(try store.list().count, 2)
-        let directory = root.appendingPathComponent("directory.x3f")
+        let directory = root.appendingPathComponent("directory.\(fileExtension)")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
         XCTAssertThrowsError(try store.importFile(directory))
         XCTAssertEqual(try store.list().count, 2)
@@ -480,7 +525,8 @@ private final class HeldEngine: ImageEngine, @unchecked Sendable {
                             FilmStock(index: 2, key: "kodak_portra_400", name: "Kodak Portra 400", monochrome: false),
                             FilmStock(index: 20, key: "kodak_doublex", name: "Kodak Double-X 5222", monochrome: true)
                          ], defaultFilm: [:]), prepareMilliseconds: 1,
-                         cameraProfiles: [CameraProfile(id: "Standard", name: "Standard"), CameraProfile(id: "Monochrome", name: "Monochrome")])
+                         cameraProfiles: [CameraProfile(id: "Standard", name: "Standard"), CameraProfile(id: "Monochrome", name: "Monochrome")],
+                         decoderIdentity: asset.isDNG ? "apple-raw-v1:test_OS_build:8.dng" : nil)
     }
     func normalize(_ settings: EditSettings) async throws -> EditSettings { try await EngineWorker().normalize(settings) }
     func applyLook(_ id: String, to settings: EditSettings) async throws -> EditSettings {
@@ -495,7 +541,12 @@ private final class HeldEngine: ImageEngine, @unchecked Sendable {
     func validateDocument(asset: ImportedAsset, json: String, previous: RecipeDocument?) async throws -> RecipeDocument {
         let values = try JSONSerialization.jsonObject(with: Data(json.utf8)) as! [String: Any]
         let recipe = String(decoding: try JSONSerialization.data(withJSONObject: values["recipe"]!), as: UTF8.self)
-        return RecipeDocument(sourceRevision: "test", recipe: try await normalize(EditSettings(canonicalJSON: recipe)))
+        let normalized = try await normalize(EditSettings(canonicalJSON: recipe))
+        if asset.isDNG, normalized.film == nil, normalized.fields["monochrome"] != nil, normalized.fields["monochrome"] != .null {
+            throw EditStorageError("A DNG cannot retain a sensor filter without monochrome film.")
+        }
+        return RecipeDocument(version: asset.isDNG ? 3 : 2, sourceRevision: "test", recipe: normalized,
+                              decoderIdentity: asset.isDNG ? "apple-raw-v1:test_OS_build:8.dng" : nil)
     }
     func exportSidecar(asset: ImportedAsset, document: RecipeDocument) async throws -> URL { throw CancellationError() }
 

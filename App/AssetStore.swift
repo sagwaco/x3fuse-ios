@@ -5,6 +5,7 @@ struct ImportedAsset: Codable, Identifiable, Hashable {
     let name: String
     let sourceName: String
     let importedAt: Date
+    var isDNG: Bool { URL(fileURLWithPath: sourceName).pathExtension.lowercased() == "dng" }
 
     func sourceURL(in root: URL) -> URL {
         root.appendingPathComponent(id.uuidString, isDirectory: true).appendingPathComponent(sourceName)
@@ -37,8 +38,8 @@ struct AssetStore {
         defer { if accessed { source.stopAccessingSecurityScopedResource() } }
         let id = UUID()
         let ext = source.pathExtension.lowercased()
-        guard ["x3f", "x3i"].contains(ext) else {
-            throw CocoaError(.fileReadUnsupportedScheme, userInfo: [NSLocalizedDescriptionKey: "Choose an X3F or X3I RAW image."])
+        guard ["x3f", "x3i", "dng"].contains(ext) else {
+            throw CocoaError(.fileReadUnsupportedScheme, userInfo: [NSLocalizedDescriptionKey: "Choose an X3F, X3I, or DNG RAW image."])
         }
         try files.createDirectory(at: root, withIntermediateDirectories: true)
         let staging = root.appendingPathComponent(".import-\(id.uuidString)", isDirectory: true)
@@ -89,6 +90,14 @@ struct AssetStore {
 
     func saveEdits(_ edits: NativeEdits, for asset: ImportedAsset, replacing expected: Data?) throws -> Data {
         let current = try loadEdits(for: asset)
+        if asset.isDNG {
+            guard let identity = edits.decoderIdentity, identity.hasPrefix("apple-raw-v1:") else {
+                throw EditStorageError("The DNG recipe has no validated decoder identity.")
+            }
+            try edits.validateDecoder(identity)
+            if case .current(let saved) = current.content { try saved.validateDecoder(identity) }
+            if case .legacy = current.content { throw EditStorageError("Legacy DNG edits cannot be overwritten.") }
+        } else { try edits.validateDecoder(nil) }
         guard current.data == expected, edits.assetID == asset.id, edits.version == 2 else {
             throw EditStorageError("Saved edits changed outside this editor. The file was kept unchanged.")
         }

@@ -136,17 +136,19 @@ struct DetailControls: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text(model.isPreparingNoise ? "Applying noise reduction…" : "Noise reduction updates when you release a slider.")
-                .font(.caption).foregroundStyle(.secondary)
-            slider("Denoise intensity", value: $draft.value.intensity, range: 0...10, step: 1)
-            Picker("Algorithm", selection: Binding(get: { draft.value.algorithm }, set: { draft.value.algorithm = $0; commit() })) {
-                Text("NLM").tag("nlm")
-                Text("BM3D").tag("bm3d")
+            if model.selectedAsset?.isDNG != true {
+                Text(model.isPreparingNoise ? "Applying noise reduction…" : "Noise reduction updates when you release a slider.")
+                    .font(.caption).foregroundStyle(.secondary)
+                slider("Denoise intensity", value: $draft.value.intensity, range: 0...10, step: 1)
+                Picker("Algorithm", selection: Binding(get: { draft.value.algorithm }, set: { draft.value.algorithm = $0; commit() })) {
+                    Text("NLM").tag("nlm")
+                    Text("BM3D").tag("bm3d")
+                }
+                Toggle("Luminance noise", isOn: Binding(get: { draft.value.luminance }, set: { draft.value.luminance = $0; commit() }))
+                Toggle("Chroma noise", isOn: Binding(get: { draft.value.chroma }, set: { draft.value.chroma = $0; commit() }))
+                slider("Denoise strength", value: $draft.value.strength, range: 0.1...3, step: 0.1)
+                Text("BM3D can take longer. RAW preparation runs in the background.").font(.caption).foregroundStyle(.secondary)
             }
-            Toggle("Luminance noise", isOn: Binding(get: { draft.value.luminance }, set: { draft.value.luminance = $0; commit() }))
-            Toggle("Chroma noise", isOn: Binding(get: { draft.value.chroma }, set: { draft.value.chroma = $0; commit() }))
-            slider("Denoise strength", value: $draft.value.strength, range: 0.1...3, step: 0.1)
-            Text("BM3D can take longer. RAW preparation runs in the background.").font(.caption).foregroundStyle(.secondary)
             VStack(alignment: .leading) {
                 Text("Sharpen: \(Int(model.settings["sharpen"]))")
                 Slider(value: Binding(get: { model.settings["sharpen"] }, set: { value in model.changeSettings { $0["sharpen"] = value } }), in: 0...100, step: 1)

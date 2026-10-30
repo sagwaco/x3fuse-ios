@@ -1,9 +1,11 @@
 //! C ABI for the X3Fuse iOS editor. See `include/x3fuse_engine.h`.
 //!
-//! The engine prepares the RAW the same way as the desktop editor: highlight
+//! The engine prepares Sigma RAW as the desktop editor does: highlight
 //! recovery on, the recipe denoise, the camera calibration from the file, and
-//! `Renderer::render_prepared`.
+//! `Renderer::render_prepared`. Apple RAW supplies validated decoded RGB.
+mod apple_raw;
 mod edits;
+pub use apple_raw::x3f_session_open_apple_raw;
 pub use edits::Document;
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -106,6 +108,7 @@ fn forget_renderer_on_gpu_error<T>(result: Result<T>) -> Result<T> {
 pub enum Kind {
     X3f,
     X3i,
+    Dng,
 }
 
 /// Reads the magic bytes. Only X3F and X3I open.
@@ -157,6 +160,7 @@ pub struct Session {
     prepared_key: String,
     /// The source file identity when it was hashed.
     stamp: Stamp,
+    decoder_identity: Option<String>,
 }
 
 /// Size, times and identity. A change means the hash must be read again.
@@ -240,6 +244,7 @@ impl Session {
             as_shot: prepared.as_shot_white_balance(),
             prepared: Some(prepared),
             stamp,
+            decoder_identity: None,
         })
     }
 
@@ -248,8 +253,9 @@ impl Session {
         let (temperature, tint) = self.as_shot;
         Ok(json!({
             "sourceRevision": self.revision,
+            "decoderIdentity": self.decoder_identity,
             "renderVersion": RENDER_VERSION,
-            "kind": match self.kind { Kind::X3f => "x3f", Kind::X3i => "x3i" },
+            "kind": match self.kind { Kind::X3f => "x3f", Kind::X3i => "x3i", Kind::Dng => "dng" },
             "width": width,
             "height": height,
             "asShotTemperature": temperature,
@@ -270,6 +276,19 @@ impl Session {
     }
 
     fn check_recipe(&self, recipe: &EditRecipe) -> Result<()> {
+        if self.kind == Kind::Dng {
+            recipe.validate_dng(false).map_err(invalid)?;
+            if recipe.temperature.is_some()
+                || recipe.tint != 0.
+                || recipe.white_balance_gains.is_some()
+                || recipe.dng_demosaic.is_some()
+            {
+                return Err(invalid(
+                    "Apple RAW supports only as-shot white balance and demosaic",
+                ));
+            }
+            return Ok(());
+        }
         if recipe.dng_demosaic.is_some() {
             return Err(invalid("dngDemosaic applies only to DNG"));
         }
@@ -282,11 +301,23 @@ impl Session {
         Ok(())
     }
 
+    fn check_document_decoder(&self, document: &Document) -> Result<()> {
+        if document.decoder_identity != self.decoder_identity
+            || (self.kind == Kind::Dng) != (document.version == 3)
+        {
+            return Err(Error(
+                X3F_ERR_UNSUPPORTED,
+                "Incompatible edit decoder. The saved file has been preserved.".into(),
+            ));
+        }
+        Ok(())
+    }
+
     pub fn edited(&self, recipe: &EditRecipe) -> bool {
         !edits::matches_defaults(recipe, &self.default, false)
     }
 
-    /// Checks a desktop document for this source. Returns it as version 2,
+    /// Checks a document for this source. Returns the source document version,
     /// and whether it holds an edit.
     pub fn document(&self, json: &str) -> Result<(Document, bool)> {
         let mut document = edits::parse_document(json)?;
@@ -298,12 +329,13 @@ impl Session {
             ));
         }
         self.check_recipe(&document.recipe)?;
+        self.check_document_decoder(&document)?;
         let legacy = document.version == 1;
         let edited = !edits::matches_defaults(&document.recipe, &self.default, legacy);
         if !edited {
             document.recipe = self.default.clone();
         }
-        document.version = 2;
+        document.version = if self.kind == Kind::Dng { 3 } else { 2 };
         Ok((document, edited))
     }
 
@@ -342,8 +374,7 @@ impl Session {
         Ok(())
     }
 
-    /// The desktop save: check against the file at `path` and `previous`,
-    /// then write a version 2 document atomically.
+    /// Check the file at `path` and `previous`, then save a document atomically.
     pub fn write_sidecar(
         &self,
         path: &Path,
@@ -371,11 +402,17 @@ impl Session {
             })?);
         }
         for document in &previous_documents {
+            self.check_document_decoder(document)?;
+            self.check_recipe(&document.recipe)?;
             edits::check_previous(document, &self.revision, &recipe, revision)?;
             previous_ms = previous_ms.max(document.updated_ms);
         }
         self.check_source(&AtomicBool::new(false))?;
-        let document = edits::new_document(&self.revision, recipe, revision, previous_ms)?;
+        let mut document = edits::new_document(&self.revision, recipe, revision, previous_ms)?;
+        if self.kind == Kind::Dng {
+            document.version = 3;
+            document.decoder_identity = self.decoder_identity.clone();
+        }
         let bytes = document.to_json();
         publish(&target, true, &AtomicBool::new(false), |temp| {
             fs::write(temp, bytes.as_bytes())?;
@@ -415,8 +452,14 @@ impl Session {
         cancel: &AtomicBool,
     ) -> Result<x3f_render::RenderedImage> {
         let recipe = self.recipe(json)?;
+        if self.kind == Kind::Dng {
+            self.check_source(cancel)?;
+        }
         let key = scene_key(&recipe);
         if self.prepared.is_none() || key != self.prepared_key {
+            if self.kind == Kind::Dng {
+                return Err(invalid("Reopen the DNG to change preparation"));
+            }
             // Free the old scene and its GPU texture first to bound memory.
             self.prepared = None;
             self.prepared = Some(prepare(&self.path, &recipe, &self.profiles, cancel)?);
@@ -518,6 +561,12 @@ impl Session {
         replace: bool,
         cancel: &AtomicBool,
     ) -> Result<Vec<String>> {
+        if self.kind == Kind::Dng {
+            return Err(Error(
+                X3F_ERR_UNSUPPORTED,
+                "DNG inputs cannot use Sigma DNG export".into(),
+            ));
+        }
         use x3f_core::ColorMode::{AsShot, Standard};
         if !highlight_recovery && opcodes.is_none_or(|dir| !dir.is_dir()) {
             return Err(invalid(
@@ -539,6 +588,7 @@ impl Session {
         };
         // Frame 0 holds the camera metadata of an X3I.
         let modes = match self.kind {
+            Kind::Dng => return Err(invalid("DNG conversion requires a Sigma source")),
             Kind::X3f => x3f_core::Reader::open(&self.path),
             Kind::X3i => x3f_core::X3iContainer::open(&self.path).and_then(|c| c.open_frame(0)),
         }
@@ -720,6 +770,14 @@ pub unsafe extern "C" fn x3f_cancel_set(cancel: *const X3fCancel) {
     if let Some(cancel) = unsafe { cancel.as_ref() } {
         cancel.0.store(true, Ordering::SeqCst);
     }
+}
+
+/// # Safety
+/// `cancel` is NULL or a live token.
+#[no_mangle]
+pub unsafe extern "C" fn x3f_cancel_is_set(cancel: *const X3fCancel) -> bool {
+    // SAFETY: the caller keeps a non-NULL token alive.
+    unsafe { cancel.as_ref() }.is_some_and(|c| c.0.load(Ordering::SeqCst))
 }
 
 /// # Safety
@@ -1076,6 +1134,12 @@ pub unsafe extern "C" fn x3f_document_check_previous(
         let previous = edits::parse_document(unsafe { text(previous_json, "previous_json") }?)?;
         // SAFETY: as above.
         let incoming = edits::parse_document(unsafe { text(incoming_json, "incoming_json") }?)?;
+        if previous.decoder_identity != incoming.decoder_identity {
+            return Err(Error(
+                X3F_ERR_CONFLICT,
+                "Edit decoder identity differs".into(),
+            ));
+        }
         edits::check_previous(
             &previous,
             &incoming.source_revision,

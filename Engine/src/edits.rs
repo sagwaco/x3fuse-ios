@@ -270,6 +270,8 @@ pub fn apply_look(recipe: &str, look: &str) -> Result<EditRecipe> {
 pub struct Document {
     pub version: u32,
     pub source_revision: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decoder_identity: Option<String>,
     pub revision: u64,
     pub updated_ms: u64,
     pub recipe: EditRecipe,
@@ -289,8 +291,8 @@ pub fn check_revision(revision: u64) -> Result<()> {
     }
 }
 
-/// Parses a document without source checks. Versions newer than 2 are
-/// unsupported, as on the desktop.
+/// Parses a document without source checks. Version 3 requires an Apple RAW
+/// decoder identity. Newer versions are unsupported.
 pub fn parse_document(json: &str) -> Result<Document> {
     if json.len() > JSON_LIMIT {
         return Err(invalid("Edit document exceeds 1 MiB"));
@@ -299,7 +301,7 @@ pub fn parse_document(json: &str) -> Result<Document> {
     let version = serde_json::from_str::<Value>(json)
         .map_err(|e| invalid(format!("Edit document: {e}")))?["version"]
         .as_u64();
-    if version.is_some_and(|v| v > u64::from(DOCUMENT_VERSION)) {
+    if version.is_some_and(|v| v > 3) {
         return Err(Error(
             X3F_ERR_UNSUPPORTED,
             "Unsupported edit version; update X3Fuse. The file has been preserved.".into(),
@@ -307,8 +309,16 @@ pub fn parse_document(json: &str) -> Result<Document> {
     }
     let document: Document =
         serde_json::from_str(json).map_err(|e| invalid(format!("Edit document: {e}")))?;
-    if !(1..=DOCUMENT_VERSION).contains(&document.version) {
+    if !(1..=3).contains(&document.version) {
         return Err(invalid("Unsupported edit version"));
+    }
+    if (document.version == 3) != document.decoder_identity.is_some()
+        || document
+            .decoder_identity
+            .as_ref()
+            .is_some_and(|s| !crate::apple_raw::valid_identity(s))
+    {
+        return Err(invalid("Invalid edit decoder identity"));
     }
     check_revision(document.revision)?;
     document.recipe.validate().map_err(invalid)?;
@@ -358,6 +368,7 @@ pub fn new_document(
     Ok(Document {
         version: DOCUMENT_VERSION,
         source_revision: source_revision.into(),
+        decoder_identity: None,
         revision,
         updated_ms: now.max(previous_ms.saturating_add(1)),
         recipe,
@@ -476,7 +487,7 @@ mod tests {
                 .is_err()
         );
         assert!(parse_document(&json.replace("\"revision\": 3", "\"revision\": 0")).is_err());
-        let newer = parse_document(&json.replace("\"version\": 2", "\"version\": 3")).unwrap_err();
+        let newer = parse_document(&json.replace("\"version\": 2", "\"version\": 4")).unwrap_err();
         assert_eq!(newer.0, X3F_ERR_UNSUPPORTED);
         assert!(parse_document(&" ".repeat(JSON_LIMIT + 1)).is_err());
         // check_previous

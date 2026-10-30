@@ -39,7 +39,7 @@ private struct ContentView: View {
             .overlay {
                 if model.assets.isEmpty {
                     ContentUnavailableView("Your RAW library", systemImage: "photo.on.rectangle.angled",
-                                           description: Text("Import X3F or X3I files. Originals are copied and kept unchanged."))
+                                           description: Text("Import X3F, X3I, or DNG files. Originals are copied and kept unchanged."))
                 }
             }
             .navigationTitle("X3Fuse Native")
@@ -59,7 +59,7 @@ private struct ContentView: View {
             }
         }
         .fileImporter(isPresented: $importing,
-                      allowedContentTypes: [UTType(filenameExtension: "x3f") ?? .data, UTType(filenameExtension: "x3i") ?? .data],
+                      allowedContentTypes: ["x3f", "x3i", "dng"].map { UTType(filenameExtension: $0) ?? .data },
                       allowsMultipleSelection: true) { result in
             switch result {
             case .success(let urls): model.importFiles(urls)
@@ -162,14 +162,14 @@ private struct EditorView: View {
                                 $0.tint = 0
                                 $0.fields["whiteBalanceGains"] = .null
                             }
-                        }))
-                        if model.settings.temperature != nil || model.settings.hasWhiteBalanceGains || model.settings.tint != 0 {
+                        })).disabled(model.selectedAsset?.isDNG == true)
+                        if model.selectedAsset?.isDNG != true && (model.settings.temperature != nil || model.settings.hasWhiteBalanceGains || model.settings.tint != 0) {
                             control("Temperature", value: Binding(get: { model.settings.temperature ?? model.asShotTemperature }, set: { value in model.changeSettings { $0.temperature = value; $0.fields["whiteBalanceGains"] = .null } }),
                                     range: 500...50000, step: 50, display: "\(Int(model.settings.temperature ?? model.asShotTemperature)) K")
                             control("Tint", value: Binding(get: { model.settings.tint }, set: { value in model.changeSettings { $0.tint = value; $0.temperature = $0.temperature ?? model.asShotTemperature; $0.fields["whiteBalanceGains"] = .null } }),
                                     range: -2000...2000, step: 1, display: String(format: "%+.0f", model.settings.tint))
                         }
-                        if let profiles = model.imageInfo?.cameraProfiles, !profiles.isEmpty {
+                        if model.selectedAsset?.isDNG != true, let profiles = model.imageInfo?.cameraProfiles, !profiles.isEmpty {
                             Menu {
                                 ForEach(profiles) { profile in
                                     Button(profile.name) { model.selectCameraProfile(profile.id) }
@@ -203,7 +203,7 @@ private struct EditorView: View {
                         }
                     }
                     .disabled(model.isExporting || model.isBenchmarking || model.isTransferringRecipe || model.isApplyingLook || model.selectionLoading || model.currentEdits == nil)
-                    Text("Calibrated RAW color · X3I uses the middle exposure").font(.caption).foregroundStyle(.secondary)
+                    Text(model.selectedAsset?.isDNG == true ? "Apple RAW · As-shot white balance" : "Calibrated RAW color · X3I uses the middle exposure").font(.caption).foregroundStyle(.secondary)
                     if let url = model.exportURL {
                         ShareLink(item: url) { Label("Share exported file", systemImage: "square.and.arrow.up") }
                     }
@@ -217,13 +217,15 @@ private struct EditorView: View {
                     Button("JPEG") { model.export(.jpeg) }
                     Button("16-bit TIFF (sRGB)") { model.export(.tiff) }
                 }
-                Section("Original RAW") {
-                    Button("Original DNG") { model.export(.dng) }
-                    Text("DNG does not bake edits. Core EXIF metadata only.")
-                }
-                Section("Desktop edits") {
-                    Button("Import sidecar…") { sidecarAssetID = model.selectedID; importingSidecar = true }
-                    Button("Export sidecar") { model.exportSidecar() }
+                if model.selectedAsset?.isDNG != true {
+                    Section("Original RAW") {
+                        Button("Original DNG") { model.export(.dng) }
+                        Text("DNG does not bake edits. Core EXIF metadata only.")
+                    }
+                    Section("Desktop edits") {
+                        Button("Import sidecar…") { sidecarAssetID = model.selectedID; importingSidecar = true }
+                        Button("Export sidecar") { model.exportSidecar() }
+                    }
                 }
             } label: { Label("Export and recipes", systemImage: "square.and.arrow.up") }
             .disabled(model.currentEdits == nil || model.isExporting || model.isBenchmarking || model.isTransferringRecipe || model.isApplyingLook || model.selectionLoading)

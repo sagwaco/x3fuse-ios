@@ -13,7 +13,7 @@ final class AppModel: ObservableObject {
     @Published var isBenchmarking = false
     @Published var message: String?
     @Published var exportURL: URL?
-    @Published var status = "Import an X3F or X3I image to begin."
+    @Published var status = "Import an X3F, X3I, or DNG image to begin."
     @Published var asShotTemperature = 6500.0
     @Published private(set) var imageInfo: ImageInfo?
     @Published private(set) var currentEdits: NativeEdits?
@@ -87,17 +87,21 @@ final class AppModel: ObservableObject {
                 var document: RecipeDocument
                 switch loaded.content {
                 case .empty:
-                    document = RecipeDocument(sourceRevision: metadata.sourceRevision, recipe: metadata.defaultRecipe)
+                    document = RecipeDocument(version: metadata.decoderIdentity == nil ? 2 : 3,
+                        sourceRevision: metadata.sourceRevision, recipe: metadata.defaultRecipe, decoderIdentity: metadata.decoderIdentity)
                 case .legacy(let legacy):
+                    guard metadata.decoderIdentity == nil else { throw EditStorageError("Legacy DNG edits cannot be opened by Apple RAW. The file was kept unchanged.") }
                     document = RecipeDocument(sourceRevision: metadata.sourceRevision, recipe: legacy.applying(to: metadata.defaultRecipe))
                 case .current(let saved):
+                    try saved.validateDecoder(metadata.decoderIdentity)
                     document = saved.document
                 }
                 document = edits.pending[asset.id]?.1.document ?? document
                 document.recipe = try await worker.normalize(document.recipe)
                 let validated = try await worker.validateDocument(asset: asset, json: document.json, previous: nil)
                 guard selectionRevision == selection, selectedID == asset.id else { return }
-                let snapshot = NativeEdits(assetID: asset.id, renderVersion: metadata.renderVersion, document: validated)
+                let snapshot = NativeEdits(assetID: asset.id, renderVersion: metadata.renderVersion, document: validated,
+                                           decoderIdentity: metadata.decoderIdentity)
                 try await library.acceptEdits(snapshot, asset: asset, replacing: loaded.data, persist: loaded.data != nil)
                 guard selectionRevision == selection else { return }
                 imageInfo = metadata
@@ -284,6 +288,7 @@ final class AppModel: ObservableObject {
     }
 
     func applyDenoise(_ noise: DenoiseSettings) {
+        guard selectedAsset?.isDNG != true else { return }
         if isPreparingNoise, renderingNoise != noise { worker.cancel() }
         changeSettings { noise.apply(to: &$0) }
     }
@@ -304,7 +309,10 @@ final class AppModel: ObservableObject {
             }
         } else {
             disabledFilm = settings.film
-            changeSettings { $0.film = nil }
+            changeSettings {
+                $0.film = nil
+                if selectedAsset?.isDNG == true { $0.fields["monochrome"] = .null }
+            }
         }
     }
 
@@ -314,6 +322,7 @@ final class AppModel: ObservableObject {
     }
 
     func selectCameraProfile(_ id: String) {
+        guard selectedAsset?.isDNG != true else { return }
         guard imageInfo?.cameraProfiles.contains(where: { $0.id == id }) == true else { return }
         applyLook(id)
     }
@@ -323,11 +332,21 @@ final class AppModel: ObservableObject {
               let revision = currentEdits?.document.revision else { return }
         let selection = selectionRevision
         let original = settings
+        let source = selectedAsset
+        let sourceDocument = currentEdits?.document
         isApplyingLook = true
         Task {
             defer { isApplyingLook = false }
             do {
+                if let source, source.isDNG, var document = sourceDocument {
+                    document.recipe = try await worker.normalize(original)
+                    _ = try await worker.validateDocument(asset: source, json: document.json, previous: nil)
+                }
                 let applied = try await worker.applyLook(id, to: original)
+                if let source, source.isDNG, var document = sourceDocument {
+                    document.recipe = applied
+                    _ = try await worker.validateDocument(asset: source, json: document.json, previous: nil)
+                }
                 guard selectionRevision == selection, currentEdits?.document.revision == revision else { return }
                 if let film = original.film { disabledFilm = film }
                 changeSettings { $0 = applied }
@@ -339,6 +358,7 @@ final class AppModel: ObservableObject {
 
     func importSidecar(_ url: URL) {
         guard let asset = selectedAsset, let snapshot = currentEdits, !isTransferringRecipe else { return }
+        guard !asset.isDNG else { message = "Apple RAW DNG recipes cannot be exchanged with desktop decoders."; return }
         requests.cancel()
         worker.cancel()
         isTransferringRecipe = true
@@ -366,6 +386,7 @@ final class AppModel: ObservableObject {
 
     func exportSidecar() {
         guard let asset = selectedAsset, let snapshot = currentEdits, !isTransferringRecipe else { return }
+        guard !asset.isDNG else { message = "Apple RAW DNG recipes cannot be exchanged with desktop decoders."; return }
         requests.cancel()
         worker.cancel()
         isTransferringRecipe = true
@@ -400,6 +421,9 @@ final class AppModel: ObservableObject {
         await edits.save(using: { pending, asset in
             var normalized = pending
             normalized.document.recipe = try await self.worker.normalize(pending.document.recipe)
+            if asset.isDNG {
+                normalized.document = try await self.worker.validateDocument(asset: asset, json: normalized.document.json, previous: nil)
+            }
             try await self.library.saveEdits(normalized, asset: asset)
         }, onError: { error, asset in self.showSaveError(error, asset: asset) })
     }

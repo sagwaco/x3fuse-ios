@@ -112,11 +112,13 @@ struct RecipeDocument: Codable, Equatable, Sendable {
     var revision: UInt64 = 1
     var updatedMs: UInt64 = UInt64(Date().timeIntervalSince1970 * 1000)
     var recipe: EditSettings
+    var decoderIdentity: String? = nil
 
     var json: String {
         get throws {
             let source = String(decoding: try JSONEncoder().encode(sourceRevision), as: UTF8.self)
-            return "{\"version\":\(version),\"sourceRevision\":\(source),\"revision\":\(revision),\"updatedMs\":\(updatedMs),\"recipe\":\(try recipe.json)}"
+            let identity = try decoderIdentity.map { ",\"decoderIdentity\":" + String(decoding: try JSONEncoder().encode($0), as: UTF8.self) } ?? ""
+            return "{\"version\":\(version),\"sourceRevision\":\(source),\"revision\":\(revision),\"updatedMs\":\(updatedMs),\"recipe\":\(try recipe.json)\(identity)}"
         }
     }
 
@@ -134,7 +136,9 @@ struct RecipeDocument: Codable, Equatable, Sendable {
             throw EditStorageError("The document revision cannot be advanced safely.")
         }
         var replacement = imported
-        replacement.version = 2
+        guard version == imported.version, decoderIdentity == imported.decoderIdentity else {
+            throw EditStorageError("The recipe uses a different RAW decoder. Existing edits are unchanged.")
+        }
         replacement.revision = previousRevision + 1
         replacement.updatedMs = max(UInt64(Date().timeIntervalSince1970 * 1000), previousTime + 1)
         return replacement
@@ -146,6 +150,14 @@ struct NativeEdits: Codable, Equatable, Sendable {
     let assetID: UUID
     let renderVersion: Int
     var document: RecipeDocument
+    var decoderIdentity: String? = nil
+
+    func validateDecoder(_ expected: String?) throws {
+        guard decoderIdentity == expected, document.decoderIdentity == expected,
+              document.version == (expected == nil ? 2 : 3) else {
+            throw EditStorageError("Saved edits use a different RAW decoder. The file was kept unchanged.")
+        }
+    }
 }
 
 struct LoadedEdits {

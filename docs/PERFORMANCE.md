@@ -254,3 +254,61 @@ Default-crop baking, ignored user crops in the tested configuration, white-balan
 compatibility, and missing physical iOS evidence prevent production integration.
 DNG import remains deferred; see [Apple RAW evaluation](APPLE_RAW.md) for the
 settings, measurements, supported observations, and required follow-up.
+
+
+## Stage 7 Apple RAW DNG import
+
+The production Apple RAW helper and rebuilt Rust bridge passed on the physical
+iPad mini 6 with iPadOS 26.5.2 (23F84), Apple decoder 8.dng. The final helper matrix
+had 63 cases: 29 accepted and 34 expected rejections. It covered Bayer/LinearRaw,
+EXIF orientations 1 through 8, exposure -1/0/+1/missing, full and non-full crops,
+and conflicting thumbnail versus RAW IFD geometry. Two malicious RAW crop fixtures
+were rejected and two valid full-RAW controls were accepted. Independent parser
+checks covered 22 malformed metadata and precedence cases.
+
+A real Merrill DNG at 4704×3136 completed the full-resolution decode and bridge,
+1536×1024 preview, JPEG and 16-bit TIFF export, native decoder identity round-trip,
+mismatched identity rejection, unsupported white-balance rejection, cancellation,
+and unchanged source hash checks. JPEG/TIFF dimensions and sRGB profiles matched.
+
+| Step | Milliseconds |
+| --- | ---: |
+| Apple decode | 965.62 |
+| Decode plus Rust bridge | 1694.13 |
+| First preview render | 1405.68 |
+| Full-resolution JPEG | 493.27 |
+| Full-resolution 16-bit TIFF | 2328.11 |
+
+Sampled peak footprint was 862,946,680 bytes (863 MB). Decode is included in the
+combined bridge timing. These are one-run wall times from a temporary signed
+physical harness using the production helper and framework, not tap latency or
+repeated-run estimates. The final helper-only Merrill run used 620,561,904 bytes;
+that lower number excludes the Rust scene and renderer. The tested Quattro DNG
+has a non-full DefaultUserCrop and was rejected as intended.
+
+Evidence is retained in [the helper matrix](benchmarks/stage7-apple-helper.jsonl)
+and [the complete engine report](benchmarks/stage7-apple-engine.json).
+See [DNG support limits](APPLE_RAW.md) for geometry, white balance, export, and
+saved-decoder identity restrictions. No general camera coverage, desktop LibRaw
+parity, or memory-pressure fix is claimed. iOS 17 through 25 were not physically tested.
+
+Validation:
+
+- 42 Release Swift unit tests passed, including DNG copy/original preservation,
+  geometry and parser checks, hash/cancellation, native identity, and film-off persistence.
+- Rust library tests passed (7), along with FFI (5), stage 3, stage 4, and stage 5
+  suites. Real Merrill and color fixtures ran; optional monochrome fixture checks
+  skipped when that fixture environment variable was absent. Formatting and Clippy
+  with warnings denied passed.
+- The DNG UI smoke test passed on isolated iPad and iPhone iOS 26.0.1 simulators:
+  exposure edits, restricted controls/export choices, film toggling, JPEG export,
+  and non-default exposure persistence after background/termination/relaunch.
+- Final device and simulator framework builds passed. The signed Release app was
+  installed and launched normally on the physical iPad.
+- Independent final review found no blocker. Captured UI screenshots were inspected.
+
+The initial simulator UI attempt rejected decoding because simulator
+`os_proc_available_memory()` returned zero. The simulator now uses host physical
+memory for its estimate; device memory checks and the 24 MP cap remain unchanged.
+The physical runtime also lacked the SDK's despeckle capability selector, so optional
+Apple adjustment capabilities are checked before calling their getters/setters.

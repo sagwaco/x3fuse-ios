@@ -1,8 +1,64 @@
-# Apple RAW evaluation
+# Apple RAW DNG import
 
-Stage 6 evaluated CIRAWFilter as an alternative to LibRaw for future DNG import.
-No production decoder, import format, Rust ABI, or renderer changed.
-The measurements below are macOS evidence, not iOS performance results.
+Stage 7 uses CIRAWFilter on a serial worker, then passes full-resolution linear RGB
+to the shared Rust renderer. No LibRaw dependency was added. The original DNG is
+copied into a unique asset directory and is never changed.
+
+## Supported subset
+
+- Classic TIFF DNG version 1.0 through 1.7, with one full-resolution CFA or LinearRaw IFD.
+- At most 24 million active pixels, with enough available process memory for the full decode.
+- Explicit valid ActiveArea. DefaultCrop must equal the full active area. Missing DefaultCrop is accepted only with zero active origin and matching native/output dimensions.
+- DefaultUserCrop must be absent or full-frame. DefaultScale must be absent or [1, 1]. Ambiguous geometry is rejected.
+- As-shot white balance only. Custom temperature, tint, gains, demosaic modes, Sigma camera profiles, sensor monochrome, RAW denoise, and fill light are rejected. Film simulation and ordinary rendered-image adjustments remain available.
+- Full-resolution JPEG and 16-bit TIFF export. DNG conversion export and desktop sidecar exchange are unavailable for DNG inputs.
+
+Geometry is read from the actual RAW IFD with a bounded TIFF parser. ImageIO can
+report thumbnail geometry while decoding a different RAW crop. The parser checks
+field types, counts, offsets, duplicate tags, graph cycles, and conflicting RAW images.
+Apple output dimensions must match the proven active area.
+
+Decode forces orientation up, applies file BaselineExposure once, and retains
+original EXIF orientation for the Rust renderer. RGBA32f uses extended linear sRGB;
+finite negative values and values above one are retained. The borrowed C buffer is
+validated and copied into owned RGB. Cancellation and source hashes are checked
+around the blocking Apple decode and bridge. An in-progress Apple decode cannot
+be interrupted inside the framework call.
+
+Native DNG documents use inner schema 3 with an Apple bridge, OS build, and decoder
+identity, inside the existing native schema 2 envelope. A changed identity rejects
+old edits without overwriting them. An OS update may therefore require a future
+explicit migration before old DNG edits can reopen. Sigma document behavior remains
+separate. No desktop LibRaw color or white-balance parity is claimed.
+
+## Physical validation
+
+The iPad mini 6 on iPadOS 26.5.2, build 23F84, used decoder 8.dng.
+The final production-helper matrix had 63 cases: 29 accepted and 34 expected
+rejections. It covered Bayer and LinearRaw, all eight orientations, exposure -1/0/+1
+and missing exposure, non-full crops, and conflicting thumbnail/RAW metadata.
+Both malicious crop fixtures were rejected; both full-RAW controls were accepted.
+The parser also passed 22 independent malformed-metadata and precedence checks.
+
+The real Merrill DNG decoded at 4704×3136 and completed preview rendering, JPEG,
+16-bit TIFF, native identity round-trip, mismatched identity rejection, unsupported
+white-balance rejection, and cancellation checks. The source hash was unchanged.
+Peak sampled footprint was 862,946,680 bytes for the full bridge/export harness.
+The tested Quattro DNG has a non-full DefaultUserCrop and is rejected.
+
+Captured evidence: [helper matrix](benchmarks/stage7-apple-helper.jsonl),
+[full bridge/export report](benchmarks/stage7-apple-engine.json). These are measured
+fixture results, not general camera coverage or memory guarantees.
+
+Pending edits can remain in memory if the matching session was released and the app
+is inactive when validation runs. Memory warnings still cancel processing; no
+resource-pressure fix is claimed. iOS 17 through 25 were not physically tested.
+
+## Historical stage 6 macOS investigation
+
+The following report records the earlier research before production integration.
+Its recommendation to defer was superseded by the physical checks above. Its timing
+figures are macOS evidence, not iOS performance results.
 
 Reference: [Apple CIRAWFilter documentation](https://developer.apple.com/documentation/coreimage/cirawfilter).
 

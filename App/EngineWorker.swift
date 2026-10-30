@@ -60,6 +60,7 @@ struct ImageInfo {
     let catalog: FilmCatalog
     let prepareMilliseconds: Double
     var cameraProfiles: [CameraProfile] = []
+    var decoderIdentity: String? = nil
 }
 
 protocol ImageEngine: Sendable {
@@ -76,6 +77,14 @@ protocol ImageEngine: Sendable {
 }
 
 final class EngineWorker: ImageEngine, @unchecked Sendable {
+    static var rawDecodeMemoryBudget: UInt64 {
+        #if targetEnvironment(simulator)
+        return ProcessInfo.processInfo.physicalMemory
+        #else
+        return UInt64(os_proc_available_memory())
+        #endif
+    }
+
     private let queue = DispatchQueue(label: "com.sagwa.X3Fuse.native.engine", qos: .userInitiated)
     private let lock = NSLock()
     private var activeToken: OpaquePointer?
@@ -121,7 +130,8 @@ final class EngineWorker: ImageEngine, @unchecked Sendable {
                              defaultRecipe: recipe, asShotTemperature: self.info["asShotTemperature"] as? Double ?? 6500,
                              catalog: try JSONDecoder().decode(FilmCatalog.self, from: Data(catalogJSON.utf8)),
                              prepareMilliseconds: elapsed,
-                             cameraProfiles: try JSONDecoder().decode([CameraProfile].self, from: profiles))
+                             cameraProfiles: try JSONDecoder().decode([CameraProfile].self, from: profiles),
+                             decoderIdentity: self.info["decoderIdentity"] as? String)
         }
     }
 
@@ -152,7 +162,8 @@ final class EngineWorker: ImageEngine, @unchecked Sendable {
     }
 
     func validateDocument(asset: ImportedAsset, json: String, previous: RecipeDocument?) async throws -> RecipeDocument {
-        try await perform { token in
+        try await perform(allowInactiveValidation: true) { token in
+            guard self.sourceID == asset.id || self.lock.withLock({ self.enabled }) else { throw CancellationError() }
             try self.open(asset, token: token)
             var recipeJSON: UnsafeMutablePointer<CChar>?
             defer { x3f_string_free(recipeJSON) }
@@ -177,15 +188,18 @@ final class EngineWorker: ImageEngine, @unchecked Sendable {
             let sourceRevision: String
             let revision: UInt64
             let updatedMs: UInt64
+            let decoderIdentity: String?
         }
         let value = try JSONDecoder().decode(WireDocument.self, from: Data(json.utf8))
         let recipe = try EditSettings(canonicalJSON: recipeJSON)
         return RecipeDocument(version: value.version, sourceRevision: value.sourceRevision,
-                              revision: value.revision, updatedMs: value.updatedMs, recipe: recipe)
+                              revision: value.revision, updatedMs: value.updatedMs, recipe: recipe,
+                              decoderIdentity: value.decoderIdentity)
     }
 
     func exportSidecar(asset: ImportedAsset, document: RecipeDocument) async throws -> URL {
-        try await perform { token in
+        guard !asset.isDNG else { throw EngineFailure(message: "Apple RAW DNG recipes cannot be exchanged with desktop decoders.") }
+        return try await perform { token in
             try self.open(asset, token: token)
             var normalized = document
             normalized.recipe = try self.normalizeNow(document.recipe)
@@ -236,7 +250,8 @@ final class EngineWorker: ImageEngine, @unchecked Sendable {
     }
 
     func export(asset: ImportedAsset, settings: EditSettings, format: ExportFormat) async throws -> ExportResult {
-        try await perform { token in
+        guard !asset.isDNG || format != .dng else { throw EngineFailure(message: "DNG conversion export is unavailable for Apple RAW sources.") }
+        return try await perform { token in
             try self.open(asset, token: token)
             guard let session = self.session else { throw EngineFailure(message: "The image session is unavailable.") }
             let normalized = try self.normalizeNow(settings)
@@ -293,9 +308,26 @@ final class EngineWorker: ImageEngine, @unchecked Sendable {
         defer { AppMetrics.signposter.endInterval("Prepare", interval) }
         var opened: OpaquePointer?
         do {
-            try checked { error in
-                asset.sourceURL(in: AssetStore.application.root).path.withCString {
-                    x3f_session_open($0, token, &opened, error)
+            let source = asset.sourceURL(in: AssetStore.application.root)
+            if asset.isDNG {
+                try autoreleasepool {
+                    let decoded = try AppleRAW.decode(url: source, availableMemory: Self.rawDecodeMemoryBudget) {
+                        if x3f_cancel_is_set(token) { throw CancellationError() }
+                    }
+                    let metadata = String(decoding: try JSONEncoder().encode(decoded.metadata), as: UTF8.self)
+                    try checked { error in
+                        source.path.withCString { path in
+                            metadata.withCString { metadata in
+                                decoded.rgba.withUnsafeBufferPointer { rgba in
+                                    x3f_session_open_apple_raw(path, rgba.baseAddress, rgba.count, metadata, token, &opened, error)
+                                }
+                            }
+                        }
+                    }
+                }
+            } else {
+                try checked { error in
+                    source.path.withCString { x3f_session_open($0, token, &opened, error) }
                 }
             }
             guard let opened else { throw EngineFailure(message: "The engine did not open the image.") }
@@ -350,7 +382,7 @@ final class EngineWorker: ImageEngine, @unchecked Sendable {
         }
     }
 
-    private func perform<T>(_ work: @escaping (OpaquePointer) throws -> T) async throws -> T {
+    private func perform<T>(allowInactiveValidation: Bool = false, _ work: @escaping (OpaquePointer) throws -> T) async throws -> T {
         let scheduledEpoch = lock.withLock { epoch }
         return try await withCheckedThrowingContinuation { continuation in
             queue.async {
@@ -359,7 +391,7 @@ final class EngineWorker: ImageEngine, @unchecked Sendable {
                     return
                 }
                 self.lock.lock()
-                let allowed = self.enabled && self.epoch == scheduledEpoch
+                let allowed = (self.enabled || allowInactiveValidation) && self.epoch == scheduledEpoch
                 if allowed { self.activeToken = token }
                 self.lock.unlock()
                 defer {

@@ -1,0 +1,189 @@
+{
+  "cancelledRenderRejected" : true,
+  "decodeAndBridgeMS" : 1694.1310167312622,
+  "decodeMS" : 965.61801433563232,
+  "decoderMismatchRejected" : true,
+  "directory" : "EBF4FCFA-B3CE-4A11-B848-6ABA0A90AD04",
+  "jpgExportMS" : 493.27301979064941,
+  "jpgProperties" : {
+    "{JFIF}" : {
+      "DensityUnit" : 0,
+      "JFIFVersion" : [
+        1,
+        0,
+        2
+      ],
+      "XDensity" : 1,
+      "YDensity" : 1
+    },
+    "ColorModel" : "RGB",
+    "Depth" : 8,
+    "PixelHeight" : 3136,
+    "PixelWidth" : 4704,
+    "ProfileName" : "x3f sRGB"
+  },
+  "metadata" : {
+    "asShotProfile" : "",
+    "asShotTemperature" : 5582.82666015625,
+    "asShotTint" : 0,
+    "cameraProfiles" : [
+
+    ],
+    "decoderIdentity" : "apple-raw-v1:Version_26.5.2_(Build_23F84):8.dng",
+    "defaultRecipe" : {
+      "blacks" : 0,
+      "cameraProfile" : null,
+      "contrast" : 0,
+      "crop" : null,
+      "curves" : {
+        "blue" : [
+          {
+            "x" : 0,
+            "y" : 0
+          },
+          {
+            "x" : 1,
+            "y" : 1
+          }
+        ],
+        "green" : [
+          {
+            "x" : 0,
+            "y" : 0
+          },
+          {
+            "x" : 1,
+            "y" : 1
+          }
+        ],
+        "master" : [
+          {
+            "x" : 0,
+            "y" : 0
+          },
+          {
+            "x" : 1,
+            "y" : 1
+          }
+        ],
+        "red" : [
+          {
+            "x" : 0,
+            "y" : 0
+          },
+          {
+            "x" : 1,
+            "y" : 1
+          }
+        ]
+      },
+      "denoise" : 0,
+      "denoiseOptions" : {
+        "algorithm" : "nlm",
+        "chroma" : true,
+        "luminance" : false,
+        "nlm" : {
+          "chromaPatch" : 3,
+          "chromaSearch" : 11,
+          "lumaPatch" : 3,
+          "lumaSearch" : 11
+        },
+        "strength" : 1
+      },
+      "effects" : null,
+      "exposure" : 0,
+      "fillLight" : 0,
+      "film" : null,
+      "highlights" : 0,
+      "hsl" : [
+        {
+          "hue" : 0,
+          "luminance" : 0,
+          "saturation" : 0
+        },
+        {
+          "hue" : 0,
+          "luminance" : 0,
+          "saturation" : 0
+        },
+        {
+          "hue" : 0,
+          "luminance" : 0,
+          "saturation" : 0
+        },
+        {
+          "hue" : 0,
+          "luminance" : 0,
+          "saturation" : 0
+        },
+        {
+          "hue" : 0,
+          "luminance" : 0,
+          "saturation" : 0
+        },
+        {
+          "hue" : 0,
+          "luminance" : 0,
+          "saturation" : 0
+        },
+        {
+          "hue" : 0,
+          "luminance" : 0,
+          "saturation" : 0
+        },
+        {
+          "hue" : 0,
+          "luminance" : 0,
+          "saturation" : 0
+        }
+      ],
+      "monochrome" : null,
+      "pitch" : 0,
+      "rotation" : 0,
+      "saturation" : 0,
+      "seed" : 3726785176,
+      "shadows" : 0,
+      "sharpen" : 50,
+      "straighten" : 0,
+      "temperature" : null,
+      "tint" : 0,
+      "version" : 1,
+      "vibrance" : 0,
+      "whites" : 0,
+      "yaw" : 0
+    },
+    "height" : 3136,
+    "kind" : "dng",
+    "renderVersion" : 20,
+    "sourceRevision" : "de223a987fc9db45b067603bcff6e9998016551f1e86946a52fb321db4f96dc0",
+    "width" : 4704
+  },
+  "nativeIdentityRoundtrip" : true,
+  "os" : "Version 26.5.2 (Build 23F84)",
+  "peakFootprintBytes" : 862946680,
+  "previewSize" : [
+    1536,
+    1024
+  ],
+  "renderMS" : 1405.6780338287354,
+  "sourceUnchanged" : true,
+  "status" : "ok",
+  "tifExportMS" : 2328.1130790710449,
+  "tifProperties" : {
+    "{TIFF}" : {
+      "Compression" : 8,
+      "PhotometricInterpretation" : 2,
+      "ResolutionUnit" : 2,
+      "XResolution" : 72,
+      "YResolution" : 72
+    },
+    "ColorModel" : "RGB",
+    "Depth" : 16,
+    "DPIHeight" : 72,
+    "DPIWidth" : 72,
+    "PixelHeight" : 3136,
+    "PixelWidth" : 4704,
+    "ProfileName" : "x3f sRGB"
+  },
+  "unsupportedWBRejected" : true
+}
